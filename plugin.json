@@ -1,0 +1,13 @@
+{
+  "name": "helpful-tools-and-hooks",
+  "description": "A curated bundle of Copilot CLI skills, agents, and hooks for everyday development on Windows.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Helpful Tools and Hooks"
+  },
+  "license": "MIT",
+  "keywords": ["skills", "hooks", "tools", "windows", "productivity"],
+  "agents": "agents/",
+  "skills": ["skills/"],
+  "hooks": "hooks.json"
+}

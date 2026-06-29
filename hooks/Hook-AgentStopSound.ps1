@@ -1,0 +1,38 @@
+<#
+    Hook-AgentStopSound.ps1
+
+    Copilot CLI "agentStop" hook -- fires when the main agent finishes its turn and yields
+    control back to you (its final message has come in). It does NOT fire on turns that end by
+    asking a question via ask_user, so this "done" cue stays distinct from the question toast.
+
+    Plays a short, distinct "done" sound (chimes) so you know -- by ear -- that the agent has
+    finished its final response. No toast.
+
+    The sound is played by a DETACHED copy of this script (-Play), so the hook returns
+    immediately and never delays the next prompt (PlaySync would otherwise block ~1s).
+
+    This is a side-effect-only hook: it never blocks the agent (no decision output, exit 0).
+
+    Based ONLY on:
+        https://docs.github.com/en/copilot/reference/hooks-reference
+        https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks
+#>
+param([switch]$Play)
+
+$soundFile = 'C:\Windows\Media\chimes.wav'
+
+if ($Play) {
+    # Detached worker: play the sound to completion, then exit.
+    try { (New-Object System.Media.SoundPlayer $soundFile).PlaySync() } catch {}
+    return
+}
+
+# Hook mode: launch a detached copy to play the sound, then return at once. The script path
+# may contain a space, so it is quoted inside the single argument string
+# (Start-Process -ArgumentList arrays do not quote individual args).
+try {
+    $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Play"
+    Start-Process -FilePath 'powershell' -ArgumentList $argLine -WindowStyle Hidden | Out-Null
+} catch {}
+
+exit 0

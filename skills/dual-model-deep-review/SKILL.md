@@ -66,11 +66,11 @@ Run the recursion-guard check above. Then settle these inputs (ask the user only
 
 1. Read `prompts\quality-review-prompt.md` and `prompts\security-review-prompt.md`.
 2. In each, replace `{{TARGET_ROOT}}`, `{{PROJECT_TYPE}}`, `{{PROJECT_TYPE_REASONING}}`, `{{SCOPE}}`, and `{{USER_CONTEXT}}` with the Step 1 values. Leave `DUAL_MODEL_DEEP_REVIEW_DEPTH=1` intact.
-3. In **one response**, launch **four** `task` sub-agents so they all run in parallel — each track once per model family. Run each reviewer at the **highest reasoning effort and context tier the model offers**. **Minimum versions: `claude-opus-4.8` and `gpt-5.5` — never go below these; if a newer GPT or Claude is available at run time, prefer it.**
+3. In **one response**, launch **four** `task` sub-agents so they all run in parallel — each track once per model family. Run each reviewer at the **highest reasoning effort and context tier the model offers**. **Minimum versions: `claude-opus-5` and `gpt-5.6 Sol` — never go below these; if a newer GPT or Claude is available at run time, prefer it.**
    - **Quality · Claude**: `agent_type: general-purpose`, `model:` newest Claude (≥ `claude-opus-4.8`), `reasoning_effort: max`, `context_tier: long_context`, `prompt:` the filled-in **quality** prompt.
-   - **Quality · GPT**: `agent_type: general-purpose`, `model:` newest GPT (≥ `gpt-5.5`), `reasoning_effort: xhigh`, `context_tier: long_context`, `prompt:` the filled-in **quality** prompt.
+   - **Quality · GPT**: `agent_type: general-purpose`, `model:` newest GPT (≥ `gpt-5.6 Sol`), `reasoning_effort: max`, `context_tier: long_context`, `prompt:` the filled-in **quality** prompt.
    - **Security · Claude**: `agent_type: general-purpose`, `model:` newest Claude (≥ `claude-opus-4.8`), `reasoning_effort: max`, `context_tier: long_context`, `prompt:` the filled-in **security** prompt.
-   - **Security · GPT**: `agent_type: general-purpose`, `model:` newest GPT (≥ `gpt-5.5`), `reasoning_effort: xhigh`, `context_tier: long_context`, `prompt:` the filled-in **security** prompt.
+   - **Security · GPT**: `agent_type: general-purpose`, `model:` newest GPT (≥ `gpt-5.6 Sol`), `reasoning_effort: max`, `context_tier: long_context`, `prompt:` the filled-in **security** prompt.
 
    The two Quality reviewers receive the identical filled-in quality prompt; the two Security reviewers receive the identical filled-in security prompt. The only difference within a track is the model family — that is the cross-model validation premise. Always use the newest GPT and newest Claude available, but never below the `gpt-5.5` / `claude-opus-4.8` floor.
 

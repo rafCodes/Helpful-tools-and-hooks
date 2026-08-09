@@ -22,6 +22,8 @@ Helpful tools and hooks/
 
 **Hooks** (`hooks.json` → `hooks/`): agentStop (text-to-speech + sound), notification (permission focus toast), preToolUse (ask_user toast). Helpers: `FocusToast.Common.ps1`, `Show-Toast.ps1`.
 
+> The agentStop **sound** (`Hook-AgentStopSound.ps1`) plays only when the main agent finishes. Sub-agent stops (from the task/explore tools) are filtered out: their `sessionId` is a tool-call id, not the session GUID, so the chime is suppressed.
+
 **TTS engine** lives in `hooks/text-to-speech/` (`speak.py` + `enabled.txt`, stdlib only) — used by the agentStop hook and toggled by the `toggle-text-to-speech` skill. Not exposed as a skill itself.
 
 ## Install / test locally

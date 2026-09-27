@@ -9,7 +9,8 @@
     raise a Windows toast so the user knows to switch back to the terminal. If the
     terminal already has focus, do nothing.
 
-    Input  (stdin, JSON): notificationType and message.
+    Reads only notification_type from stdin. This notification field uses snake_case.
+    The handler ignores message and title.
     Output (stdout, JSON): {}  -> take no session action.
 
     Based ONLY on:
@@ -24,11 +25,13 @@ try {
     $raw = Read-HookStdin
     if (-not $raw) { throw 'invalid input' }
 
-    $payload = $raw | ConvertFrom-Json -ErrorAction Stop
-    if ($null -eq $payload) { throw 'invalid input' }
-    $notificationType = [string]$payload.notificationType
+    $payload = $raw | ConvertFrom-Json -AsHashtable -NoEnumerate -ErrorAction Stop
+    if ($payload -isnot [System.Collections.IDictionary] -or $payload['notification_type'] -isnot [string]) {
+        throw 'invalid input'
+    }
+    $notificationType = $payload['notification_type']
 
-    if ($notificationType -notin @('permission_prompt', 'elicitation_dialog')) {
+    if ($notificationType -cnotin @('permission_prompt', 'elicitation_dialog')) {
         Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code 'unsupported_notification'
         '{}'
         exit 0
@@ -51,7 +54,7 @@ try {
     exit 0
 }
 
-$kind = if ($notificationType -eq 'elicitation_dialog') {
+$kind = if ($notificationType -ceq 'elicitation_dialog') {
     'question'
 } else {
     'permission'

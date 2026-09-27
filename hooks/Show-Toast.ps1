@@ -10,55 +10,44 @@
     but do not display from a detached/background process even though ShowBalloonTip succeeds;
     the WinRT toast displays reliably from a detached process.)
 
-    Invocation:
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -File Show-Toast.ps1 -PayloadFile <json>
-
-    The temp JSON file holds { Title, Message }. A temp file is used (rather than command-line
-    args) so arbitrary question text -- spaces, quotes, em-dashes, parentheses -- is passed
-    without command-line quoting hazards. The file is deleted once read.
-
-    The caller's title is trusted. The caller's message is untrusted (agent-supplied): it is
-    whitespace/control-stripped and length-capped so it cannot spoof the title or push the
-    trusted action line out of view. (WinRT also XML-escapes the text nodes.)
+    The parent passes only a fixed notification kind. The toast does not include question,
+    permission, command, path, or session text.
 
     Based ONLY on:
         https://docs.github.com/en/copilot/reference/hooks-reference
         https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks
 #>
 param(
-    [string]$Title,
-    [string]$Message,
-    [string]$PayloadFile
+    [Parameter(Mandatory)]
+    [ValidateSet('question', 'permission')]
+    [string]$Kind
 )
 
-if ($PayloadFile) {
-    # Written as UTF-8 by the pwsh launcher; read it back as UTF-8 explicitly so non-ASCII
-    # (em-dashes, smart quotes, accents) survive -- Windows PowerShell 5.1 would otherwise
-    # default to the ANSI code page and mojibake them.
-    $p = Get-Content -LiteralPath $PayloadFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    Remove-Item -LiteralPath $PayloadFile -Force -ErrorAction SilentlyContinue
-    $Title = [string]$p.Title
-    $Message = [string]$p.Message
+. "$PSScriptRoot\HookLog.Common.ps1"
+
+try {
+    $title = if ($Kind -eq 'question') {
+        'Copilot CLI - question'
+    } else {
+        'Copilot CLI - permission needed'
+    }
+    $body = 'Switch to the terminal to respond.'
+
+    [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+    [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
+
+    $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+    $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+    $texts = $template.GetElementsByTagName('text')
+    [void]$texts.Item(0).AppendChild($template.CreateTextNode($title))
+    [void]$texts.Item(1).AppendChild($template.CreateTextNode($body))
+
+    $toast = New-Object Windows.UI.Notifications.ToastNotification($template)
+    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId)
+    if ([string]$notifier.Setting -ne 'Enabled') { throw 'notifications disabled' }
+    $notifier.Show($toast)
+    Write-HookResult -Hook 'toast-renderer' -Outcome 'worked' -Code 'toast_displayed'
+} catch {
+    Write-HookResult -Hook 'toast-renderer' -Outcome 'did_not_work' -Code 'toast_display_failed'
+    exit 0
 }
-
-$action = 'Switch to the terminal to respond.'
-$body = $action
-if ($Message) {
-    $clean = ($Message -replace '[\p{C}\s]+', ' ').Trim()
-    if ($clean.Length -gt 120) { $clean = $clean.Substring(0, 120).TrimEnd() + '...' }
-    if ($clean) { $body = "$clean - $action" }
-}
-if (-not $Title) { $Title = 'GitHub Copilot CLI' }
-
-# WinRT toast (reliable from a detached process; requires Windows PowerShell 5.1).
-[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
-[void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
-
-$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
-$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-$texts = $template.GetElementsByTagName('text')
-[void]$texts.Item(0).AppendChild($template.CreateTextNode($Title))
-[void]$texts.Item(1).AppendChild($template.CreateTextNode($body))
-
-$toast = New-Object Windows.UI.Notifications.ToastNotification($template)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)

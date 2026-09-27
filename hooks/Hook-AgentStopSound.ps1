@@ -8,13 +8,9 @@
     Plays a short, distinct "done" sound (chimes) so you know -- by ear -- that the agent has
     finished its final response. No toast.
 
-    SUB-AGENT FILTER: agentStop also fires when a sub-agent (spawned via the task/explore tools)
-    finishes. Those stops are suppressed so only the MAIN agent chimes. A sub-agent stop is
-    identified from the stdin payload: its "sessionId" is the parent tool-call id (e.g. "toolu_..."
-    / "call_...") and its "transcriptPath" is empty, whereas the main agent's "sessionId" is the
-    real session GUID and its "transcriptPath" points at events.jsonl. We therefore play ONLY when
-    "sessionId" is a GUID -- model-agnostic, since a tool-call id is never a GUID. Verified against
-    the session events.jsonl (18 main-agent stops = GUID; 3 sub-agent stops = non-GUID/empty path).
+    SUB-AGENT FILTER: agentStop also fires when a sub-agent finishes. The main agent's
+    sessionId matches the session directory that contains transcriptPath. Sub-agent IDs do not
+    match that directory, so those stops are suppressed.
 
     The sound is played by a DETACHED copy of this script (-Play), so the hook returns
     immediately and never delays the next prompt (PlaySync would otherwise block ~1s).
@@ -27,28 +23,34 @@
 #>
 param([switch]$Play)
 
-$soundFile = 'C:\Windows\Media\chimes.wav'
+$soundFile = Join-Path $env:SystemRoot 'Media\chimes.wav'
+. "$PSScriptRoot\HookLog.Common.ps1"
 
 if ($Play) {
-    # Detached worker: play the sound to completion, then exit.
-    try { (New-Object System.Media.SoundPlayer $soundFile).PlaySync() } catch {}
+    try {
+        (New-Object System.Media.SoundPlayer $soundFile).PlaySync()
+        Write-HookResult -Hook 'agent-stop-sound' -Outcome 'worked' -Code 'sound_played'
+    } catch {
+        Write-HookResult -Hook 'agent-stop-sound' -Outcome 'did_not_work' -Code 'sound_play_failed'
+    }
     return
 }
 
-# Hook mode: read the agentStop payload from stdin and suppress sub-agent stops.
-# Play only when sessionId is a real session GUID (main agent). Any sub-agent stop, empty
-# stdin, or unparseable payload yields silence -- fail toward no spurious chime.
+# Hook mode: read the payload and play only when sessionId matches the transcript session.
 try {
-    $raw = [Console]::In.ReadToEnd()
-    $payload = $raw | ConvertFrom-Json
+    $raw = Read-HookStdin
+    if (-not $raw) { throw 'invalid input' }
+    $payload = $raw | ConvertFrom-Json -ErrorAction Stop
+    if ($null -eq $payload) { throw 'invalid input' }
     $sessionId = [string]$payload.sessionId
+    $transcriptPath = [string]$payload.transcriptPath
 } catch {
+    Write-HookResult -Hook 'agent-stop-sound' -Outcome 'did_not_work' -Code 'invalid_stop_payload'
     exit 0
 }
 
-$guidRegex = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-if ($sessionId -notmatch $guidRegex) {
-    # Sub-agent (tool-call-id sessionId) or unknown -- stay silent.
+if (-not (Test-MainAgentStop -SessionId $sessionId -TranscriptPath $transcriptPath)) {
+    Write-HookResult -Hook 'agent-stop-sound' -Outcome 'worked' -Code 'subagent_suppressed'
     exit 0
 }
 
@@ -57,7 +59,17 @@ if ($sessionId -notmatch $guidRegex) {
 # (Start-Process -ArgumentList arrays do not quote individual args).
 try {
     $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Play"
-    Start-Process -FilePath 'powershell' -ArgumentList $argLine -WindowStyle Hidden | Out-Null
-} catch {}
+    $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Start-Process -FilePath $powershellPath -ArgumentList $argLine -WindowStyle Hidden -ErrorAction Stop | Out-Null
+    $dispatched = $true
+} catch {
+    $dispatched = $false
+}
+
+if ($dispatched) {
+    Write-HookResult -Hook 'agent-stop-sound' -Outcome 'worked' -Code 'sound_dispatched'
+} else {
+    Write-HookResult -Hook 'agent-stop-sound' -Outcome 'did_not_work' -Code 'sound_dispatch_failed'
+}
 
 exit 0

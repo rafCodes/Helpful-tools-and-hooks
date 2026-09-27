@@ -13,12 +13,12 @@ import subprocess
 _ENABLED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "enabled.txt")
 
 def is_enabled() -> bool:
-    """Read enabled.txt next to this script. Missing/unreadable file = enabled."""
+    """Enable speech only when enabled.txt contains exactly true."""
     try:
         with open(_ENABLED_FILE, "r", encoding="utf-8-sig") as f:
-            return f.read().strip().lower() not in ("false", "0", "off", "no")
-    except OSError:
-        return True
+            return f.read().strip().lower() == "true"
+    except (OSError, UnicodeError):
+        return False
 
 _FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
 _INDENTED_CODE = re.compile(r"(?m)^(?: {4}|\t).*$")
@@ -98,12 +98,21 @@ def speak(text: str, rate: int):
     via a named Windows mutex so concurrent invocations queue rather than
     overlap on the audio device."""
     rate = max(-10, min(10, rate))
-    escaped_text = text.replace('"', '`"').replace("'", "''")
     ps_command = (
         'Add-Type -AssemblyName System.Speech;'
+        '$reader = New-Object System.IO.StreamReader('
+        '[Console]::OpenStandardInput(), (New-Object System.Text.UTF8Encoding($false)));'
         '$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer;'
         f'$synth.Rate = {rate};'
-        f'$synth.Speak("{escaped_text}")'
+        '$synth.Speak($reader.ReadToEnd())'
+    )
+    system_root = os.environ["SystemRoot"]
+    powershell = os.path.join(
+        system_root,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
     )
 
     mutex = None
@@ -123,13 +132,21 @@ def speak(text: str, rate: int):
         mutex = k32.CreateMutexW(None, False, "CopilotSpeakTTS")
         if mutex:
             # WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80 (previous holder died — still safe to proceed)
-            result = k32.WaitForSingleObject(mutex, 0xFFFFFFFF)
+            result = k32.WaitForSingleObject(mutex, 30000)
             acquired = result in (0, 0x80)
     except Exception:
-        pass
+        acquired = False
 
     try:
-        subprocess.run(["powershell", "-Command", ps_command], check=True)
+        if not acquired:
+            raise TimeoutError("Timed out waiting for the speech mutex.")
+        timeout_seconds = max(30, min(180, len(text) // 10 + 30))
+        subprocess.run(
+            [powershell, "-NoProfile", "-Command", ps_command],
+            input=text.encode("utf-8"),
+            check=True,
+            timeout=timeout_seconds,
+        )
     finally:
         if mutex:
             try:
@@ -155,6 +172,7 @@ def main():
 
     rate_override = None
     raw = False
+    hook_env = False
     max_chars = 2000
     file_path = None
     text_args = []
@@ -175,10 +193,14 @@ def main():
                 sys.exit(1)
         elif a.startswith("--file="):
             file_path = a.split("=", 1)[1]
+        elif a == "--hook-env":
+            hook_env = True
         else:
             text_args.append(a)
 
-    if file_path:
+    if hook_env:
+        text = os.environ.pop("COPILOT_SPEAK_TEXT", "")
+    elif file_path:
         try:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
@@ -200,17 +222,21 @@ def main():
     if not raw:
         text = clean_for_speech(text)
     if not text:
-        _safe_print("(nothing to speak after cleanup)")
+        if not hook_env:
+            _safe_print("(nothing to speak after cleanup)")
         return
     if not is_enabled():
-        _safe_print(f"(TTS disabled via {_ENABLED_FILE})")
+        if not hook_env:
+            _safe_print(f"(TTS disabled via {_ENABLED_FILE})")
         return
     if max_chars > 0 and len(text) > max_chars:
         text = text[:max_chars].rstrip() + "..."
     rate = rate_override if rate_override is not None else rate_for_length(len(text))
-    _safe_print(f"🔊 Speaking (rate={rate}): {text[:100]}{'...' if len(text) > 100 else ''}")
+    if not hook_env:
+        _safe_print(f"🔊 Speaking (rate={rate}): {text[:100]}{'...' if len(text) > 100 else ''}")
     speak(text, rate)
-    _safe_print("✓ Done")
+    if not hook_env:
+        _safe_print("✓ Done")
 
 if __name__ == "__main__":
     main()

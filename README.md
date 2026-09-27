@@ -20,9 +20,11 @@ Helpful tools and hooks/
 - `markitdown` — convert PDF/DOCX/XLSX/etc. to Markdown (venv recreated from `scripts/requirements.txt`)
 - `toggle-text-to-speech` — mute/unmute the TTS hook
 
-**Hooks** (`hooks.json` → `hooks/`): agentStop (text-to-speech + sound), notification (permission focus toast), preToolUse (ask_user toast). Helpers: `FocusToast.Common.ps1`, `Show-Toast.ps1`.
+**Hooks** (`hooks.json` → `hooks/`): agentStop (text-to-speech + sound) and notification (permission and question focus toasts). Toasts use fixed text and do not copy question or command content into Windows notification history. Helpers: `FocusToast.Common.ps1`, `HookLog.Common.ps1`, and `Show-Toast.ps1`.
 
-> The agentStop **sound** (`Hook-AgentStopSound.ps1`) plays only when the main agent finishes. Sub-agent stops (from the task/explore tools) are filtered out: their `sessionId` is a tool-call id, not the session GUID, so the chime is suppressed.
+The hooks write best-effort results to `hooks.log` in `COPILOT_PLUGIN_DATA`. Each JSON line contains only a UTC timestamp, a fixed hook name, `worked` or `did_not_work`, and a fixed result code. The log does not store notification text, paths, session identifiers, tool arguments, or exception messages. The logger serializes concurrent writes and resets the file when it reaches 1 MiB. It drops an entry if the plugin data path is unavailable or the log lock is unavailable for two seconds.
+
+> The agentStop **sound** (`Hook-AgentStopSound.ps1`) plays only when the main agent finishes. The hook compares `sessionId` with the session directory that contains `transcriptPath`. It suppresses sub-agent stops.
 
 **TTS engine** lives in `hooks/text-to-speech/` (`speak.py` + `enabled.txt`, stdlib only) — used by the agentStop hook and toggled by the `toggle-text-to-speech` skill. Not exposed as a skill itself.
 
@@ -34,3 +36,11 @@ copilot plugin list
 ```
 
 After changes, re-run `copilot plugin install` (cached between sessions). Uninstall: `copilot plugin uninstall helpful-tools-and-hooks`.
+
+Run the local regression checks:
+
+```powershell
+.\tests\Test-Hooks.ps1
+```
+
+A successful test prints `PASS hook regression checks`.

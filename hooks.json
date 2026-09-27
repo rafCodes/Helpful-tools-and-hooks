@@ -19,13 +19,11 @@
         "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Show-FocusToast.ps1'",
         "timeoutSec": 20,
         "type": "command"
-      }
-    ],
-    "preToolUse": [
+      },
       {
-        "matcher": "ask_user",
-        "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Hook-AskUserToast.ps1'",
-        "timeoutSec": 15,
+        "matcher": "elicitation_dialog",
+        "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Show-FocusToast.ps1'",
+        "timeoutSec": 20,
         "type": "command"
       }
     ]

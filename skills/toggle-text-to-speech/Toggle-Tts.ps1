@@ -18,16 +18,12 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $flagFile = Join-Path $scriptDir "..\..\hooks\text-to-speech\enabled.txt"
 $flagFile = [System.IO.Path]::GetFullPath($flagFile)
 
-if (-not (Test-Path $flagFile)) {
-    [System.IO.File]::WriteAllText($flagFile, "true", [System.Text.UTF8Encoding]::new($false))
-}
-
 function Read-Flag {
     $raw = (Get-Content $flagFile -Raw -ErrorAction SilentlyContinue)
-    if ($null -eq $raw) { return $true }
+    if ($null -eq $raw) { return $false }
     # Strip UTF-8 BOM if present
     if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) { $raw = $raw.Substring(1) }
-    return ($raw.Trim().ToLower() -notin @('false', '0', 'off', 'no'))
+    return ($raw.Trim().ToLower() -eq 'true')
 }
 
 function Write-Flag([bool]$enabled) {
@@ -40,6 +36,10 @@ $current = Read-Flag
 if ($Status) {
     Write-Host "TTS is currently $(if ($current) {'enabled'} else {'disabled'})"
     return
+}
+
+if (-not (Test-Path -LiteralPath $flagFile)) {
+    [System.IO.File]::WriteAllText($flagFile, "false", [System.Text.UTF8Encoding]::new($false))
 }
 
 if ($State) {

@@ -3,18 +3,13 @@
 
     Copilot CLI "notification" hook handler.
 
-    Configured (in the shared setup-hooks hooks.json) with matcher "permission_prompt", so
-    this script only runs when the agent requests permission to execute a tool.
+    Configured for "permission_prompt" and "elicitation_dialog" notifications.
 
     Behaviour: if the terminal window hosting this CLI is NOT the foreground window,
     raise a Windows toast so the user knows to switch back to the terminal. If the
     terminal already has focus, do nothing.
 
-    (Questions asked via the ask_user tool are handled separately by Hook-AskUserToast.ps1,
-    because this terminal renders ask_user inline and does not emit an elicitation_dialog
-    notification.)
-
-    Input  (stdin, JSON): notification_type, message (+ sessionId, timestamp, cwd, hook_event_name, title)
+    Input  (stdin, JSON): notificationType and message.
     Output (stdout, JSON): {}  -> take no session action.
 
     Based ONLY on:
@@ -25,25 +20,43 @@
 . "$PSScriptRoot\FocusToast.Common.ps1"
 
 # --- Read the notification payload from stdin (UTF-8; see Read-HookStdin). ---
-$notificationType = $null
-$payloadMessage = $null
-$raw = Read-HookStdin
-if ($raw) {
-    $payload = $raw | ConvertFrom-Json
-    $notificationType = $payload.notification_type
-    $payloadMessage = $payload.message
-}
+try {
+    $raw = Read-HookStdin
+    if (-not $raw) { throw 'invalid input' }
 
-if (Test-TerminalFocused) {
-    # Terminal already has focus -> the user can see the prompt. Do nothing.
+    $payload = $raw | ConvertFrom-Json -ErrorAction Stop
+    if ($null -eq $payload) { throw 'invalid input' }
+    $notificationType = [string]$payload.notificationType
+
+    if ($notificationType -notin @('permission_prompt', 'elicitation_dialog')) {
+        Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code 'unsupported_notification'
+        '{}'
+        exit 0
+    }
+} catch {
+    Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code 'invalid_input'
     '{}'
-    return
+    exit 0
 }
 
-# --- Terminal is NOT focused -> raise a toast. Title is trusted, not from the payload. ---
-$title = 'GitHub Copilot CLI'
-if ($notificationType -eq 'permission_prompt') { $title = 'Copilot CLI - permission needed' }
+try {
+    if (Test-TerminalFocused) {
+        Write-HookResult -Hook 'notification' -Outcome 'worked' -Code 'focused'
+        '{}'
+        exit 0
+    }
+} catch {
+    Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code 'focus_check_failed'
+    '{}'
+    exit 0
+}
 
-Start-FocusToast -Title $title -Message ([string]$payloadMessage)
+$kind = if ($notificationType -eq 'elicitation_dialog') {
+    'question'
+} else {
+    'permission'
+}
+
+[void](Start-FocusToast -Kind $kind)
 
 '{}'

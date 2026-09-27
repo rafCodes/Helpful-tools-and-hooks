@@ -5,7 +5,7 @@ description: Toggle the text-to-speech hook on or off. Use when asked to "mute C
 
 # Toggle Text-to-Speech
 
-Flips the `enabled.txt` flag inside the `text-to-speech` skill so the
+Flips the `enabled.txt` flag inside the hook's `text-to-speech` directory so the
 `Hook-AgentStop.ps1` TTS playback can be silenced without unloading hooks.
 
 ## Usage
@@ -20,9 +20,10 @@ powershell -File ./Toggle-Tts.ps1 -Status    # just print state
 ```
 
 Prints the new state (`enabled` or `disabled`). No CLI restart required —
-`speak.py` re-reads the file on every invocation.
+the agentStop hook and `speak.py` re-read the file on every invocation. Only the exact
+value `true` enables speech. A missing or invalid file keeps speech disabled.
 
 ## Files
 
 - `Toggle-Tts.ps1` — the toggle script.
-- The flag file lives at `../text-to-speech/enabled.txt` (next to `speak.py`).
+- The flag file lives at `../../hooks/text-to-speech/enabled.txt` (next to `speak.py`).

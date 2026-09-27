@@ -1,7 +1,7 @@
 {
   "name": "helpful-tools-and-hooks",
   "description": "A curated bundle of Copilot CLI skills, agents, and hooks for everyday development on Windows.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": {
     "name": "Helpful Tools and Hooks"
   },

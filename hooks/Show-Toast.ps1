@@ -1,8 +1,8 @@
 <#
     Show-Toast.ps1
 
-    Raises a single modern Windows toast (WinRT ToastNotification). Shared by the focus-toast
-    hooks. Does NOT perform a focus check -- callers decide whether to show a toast.
+    Shows a persistent topmost question alert or a Windows permission toast.
+    Does NOT perform a focus check -- callers decide whether to show an alert.
 
     IMPORTANT: WinRT toast types are only projected in Windows PowerShell 5.1 (powershell.exe),
     not PowerShell 7 (pwsh). This script MUST be launched with powershell.exe. The pwsh hook
@@ -26,11 +26,13 @@ param(
 . "$PSScriptRoot\HookLog.Common.ps1"
 
 try {
-    $title = if ($Kind -eq 'question') {
-        'Copilot CLI - question'
-    } else {
-        'Copilot CLI - permission needed'
+    if ($Kind -eq 'question') {
+        . "$PSScriptRoot\QuestionAlert.Common.ps1"
+        Show-QuestionAlert
+        return
     }
+
+    $title = 'Copilot CLI - permission needed'
     $body = 'Switch to the terminal to respond.'
 
     [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
@@ -48,6 +50,10 @@ try {
     $notifier.Show($toast)
     Write-HookResult -Hook 'toast-renderer' -Outcome 'worked' -Code 'toast_displayed'
 } catch {
-    Write-HookResult -Hook 'toast-renderer' -Outcome 'did_not_work' -Code 'toast_display_failed'
+    if ($Kind -eq 'question') {
+        Write-HookResult -Hook 'question-alert' -Outcome 'did_not_work' -Code 'question_alert_display_failed'
+    } else {
+        Write-HookResult -Hook 'toast-renderer' -Outcome 'did_not_work' -Code 'toast_display_failed'
+    }
     exit 0
 }

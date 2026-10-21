@@ -1,6 +1,8 @@
-param([switch]$Focused)
+param([switch]$Focused, [switch]$FocusFailure, [switch]$DispatchFailure)
 
-if ($Focused) {
+if ($FocusFailure) {
+    function Test-FixtureTerminalFocused { throw 'Fixture focus check failure.' }
+} elseif ($Focused) {
     function Test-FixtureTerminalFocused { return $true }
 } else {
     function Test-FixtureTerminalFocused { return $false }
@@ -16,11 +18,10 @@ function Start-FixtureToastProcess {
 
     $expectedExecutable = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $renderer = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\hooks\Show-Toast.ps1'))
-    $expectedArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$renderer`" -Kind "
+    $expectedArguments = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$renderer`" -Kind "
     if ($FilePath -cne $expectedExecutable -or $WindowStyle -cne 'Hidden') {
         throw 'Unexpected notification process request.'
     }
-
     if ($ArgumentList -ceq ($expectedArguments + 'question')) {
         $kind = 'question'
     } elseif ($ArgumentList -ceq ($expectedArguments + 'permission')) {
@@ -28,6 +29,7 @@ function Start-FixtureToastProcess {
     } else {
         throw 'Unexpected notification process arguments.'
     }
+    if ($DispatchFailure) { throw 'Fixture process launch failure.' }
 
     [void][System.IO.Directory]::CreateDirectory($env:COPILOT_PLUGIN_DATA)
     [System.IO.File]::AppendAllText(

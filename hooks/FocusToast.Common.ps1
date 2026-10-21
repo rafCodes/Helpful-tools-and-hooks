@@ -4,7 +4,7 @@
     Shared helper for the terminal-focus-toast hooks. Dot-source this file:
         . "$PSScriptRoot\FocusToast.Common.ps1"
 
-    Provides focus detection and detached toast dispatch for Show-FocusToast.ps1.
+    Provides focus detection and detached alert dispatch for Show-FocusToast.ps1.
 
     Based ONLY on:
         https://docs.github.com/en/copilot/reference/hooks-reference
@@ -47,8 +47,8 @@ function Test-TerminalFocused {
 
 function Start-FocusToast {
     <#
-        Launch the toast renderer (Show-Toast.ps1) detached, so the calling hook returns
-        immediately and is never delayed by the toast.
+        Launch the notification renderer (Show-Toast.ps1) detached, so the calling hook
+        returns immediately and is never delayed by the alert.
 
         Show-Toast uses the WinRT toast API, which is only projected in Windows PowerShell 5.1.
         The command line contains only a fixed notification kind. It does not contain agent text.
@@ -61,7 +61,7 @@ function Start-FocusToast {
 
     $toast = Join-Path $PSScriptRoot 'Show-Toast.ps1'
     $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$toast`" -Kind $Kind"
+    $argLine = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$toast`" -Kind $Kind"
     $dispatched = $false
 
     try {
@@ -75,9 +75,11 @@ function Start-FocusToast {
     }
 
     if ($dispatched) {
-        Write-HookResult -Hook 'notification' -Outcome 'worked' -Code 'toast_dispatched'
+        $code = if ($Kind -eq 'question') { 'question_alert_dispatched' } else { 'toast_dispatched' }
+        Write-HookResult -Hook 'notification' -Outcome 'worked' -Code $code
     } else {
-        Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code 'toast_dispatch_failed'
+        $code = if ($Kind -eq 'question') { 'question_alert_dispatch_failed' } else { 'toast_dispatch_failed' }
+        Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code $code
     }
     return $dispatched
 }

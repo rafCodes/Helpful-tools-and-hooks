@@ -6,7 +6,7 @@
     Configured for "permission_prompt" and "elicitation_dialog" notifications.
 
     Behaviour: if the terminal window hosting this CLI is NOT the foreground window,
-    raise a Windows toast so the user knows to switch back to the terminal. If the
+    show a persistent topmost question alert or a Windows permission toast. If the
     terminal already has focus, do nothing.
 
     Reads only notification_type from stdin. This notification field uses snake_case.

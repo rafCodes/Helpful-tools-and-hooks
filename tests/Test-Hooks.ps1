@@ -52,7 +52,7 @@ try {
             Input = '{"hook_event_name":"Notification","notification_type":"elicitation_dialog","message":"private-test-canary","title":"untrusted-test-title"}'
             Focused = $false
             Outcome = 'worked'
-            Code = 'toast_dispatched'
+            Code = 'question_alert_dispatched'
             Kind = 'question'
         },
         @{
@@ -69,6 +69,38 @@ try {
             Focused = $true
             Outcome = 'worked'
             Code = 'focused'
+            Kind = $null
+        },
+        @{
+            Name = 'focused-permission'
+            Input = '{"notification_type":"permission_prompt"}'
+            Focused = $true
+            Outcome = 'worked'
+            Code = 'focused'
+            Kind = $null
+        },
+        @{
+            Name = 'focus-check-failure'
+            Input = '{"notification_type":"elicitation_dialog"}'
+            FocusFailure = $true
+            Outcome = 'did_not_work'
+            Code = 'focus_check_failed'
+            Kind = $null
+        },
+        @{
+            Name = 'question-dispatch-failure'
+            Input = '{"notification_type":"elicitation_dialog"}'
+            DispatchFailure = $true
+            Outcome = 'did_not_work'
+            Code = 'question_alert_dispatch_failed'
+            Kind = $null
+        },
+        @{
+            Name = 'permission-dispatch-failure'
+            Input = '{"notification_type":"permission_prompt"}'
+            DispatchFailure = $true
+            Outcome = 'did_not_work'
+            Code = 'toast_dispatch_failed'
             Kind = $null
         },
         @{
@@ -135,11 +167,11 @@ try {
             $env:COPILOT_PLUGIN_DATA = Join-Path $testLogDir $case.Name
             [void][System.IO.Directory]::CreateDirectory($env:COPILOT_PLUGIN_DATA)
             $stderrFile = Join-Path $env:COPILOT_PLUGIN_DATA 'stderr.txt'
-            if ($case.Focused) {
-                $output = @($case.Input | pwsh -NoProfile -NonInteractive -File .\tests\fixtures\Invoke-NotificationHook.ps1 -Focused 2> $stderrFile)
-            } else {
-                $output = @($case.Input | pwsh -NoProfile -NonInteractive -File .\tests\fixtures\Invoke-NotificationHook.ps1 2> $stderrFile)
-            }
+            $fixtureArguments = @('-NoProfile', '-NonInteractive', '-File', '.\tests\fixtures\Invoke-NotificationHook.ps1')
+            if ($case.Focused) { $fixtureArguments += '-Focused' }
+            if ($case.FocusFailure) { $fixtureArguments += '-FocusFailure' }
+            if ($case.DispatchFailure) { $fixtureArguments += '-DispatchFailure' }
+            $output = @($case.Input | pwsh @fixtureArguments 2> $stderrFile)
             if ($LASTEXITCODE -ne 0 -or ($output -join '').Trim() -cne '{}' -or
                 (Get-Item -LiteralPath $stderrFile).Length -ne 0) {
                 throw "Notification case '$($case.Name)' did not return a successful empty decision with empty stderr."
@@ -170,6 +202,35 @@ try {
                 }
             } elseif (Test-Path -LiteralPath $dispatchFile) {
                 throw "Notification case '$($case.Name)' dispatched an unexpected toast."
+            }
+        }
+
+        foreach ($mode in @('normal', 'sound-failure')) {
+            $env:COPILOT_PLUGIN_DATA = Join-Path $testLogDir "question-renderer-$mode"
+            [void][System.IO.Directory]::CreateDirectory($env:COPILOT_PLUGIN_DATA)
+            $stderrFile = Join-Path $env:COPILOT_PLUGIN_DATA 'stderr.txt'
+            $stdoutFile = Join-Path $env:COPILOT_PLUGIN_DATA 'stdout.txt'
+            $renderer = Join-Path $root 'tests\fixtures\Test-QuestionAlert.ps1'
+            $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $rendererArguments = "-NoProfile -NonInteractive -STA -File `"$renderer`""
+            if ($mode -eq 'sound-failure') { $rendererArguments += ' -SoundFailure' }
+            $rendererProcess = Start-Process -FilePath $powershellPath -ArgumentList $rendererArguments `
+                -WindowStyle Hidden -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -PassThru
+            try {
+                if (-not $rendererProcess.WaitForExit(30000)) {
+                    Stop-Process -Id $rendererProcess.Id -Force
+                    [void]$rendererProcess.WaitForExit(5000)
+                    throw 'The question renderer process exceeded its test timeout.'
+                }
+                $rendererProcess.WaitForExit()
+                $rendererProcess.Refresh()
+                [string]$rendererOutput = Get-Content -LiteralPath $stdoutFile -Raw
+                if ($rendererProcess.ExitCode -ne 0 -or $rendererOutput.Trim() -cne 'PASS question alert renderer checks' -or
+                    (Get-Item -LiteralPath $stderrFile).Length -ne 0) {
+                    throw "Question renderer checks failed ($mode): $rendererOutput $(Get-Content -LiteralPath $stderrFile -Raw)"
+                }
+            } finally {
+                $rendererProcess.Dispose()
             }
         }
     } finally {

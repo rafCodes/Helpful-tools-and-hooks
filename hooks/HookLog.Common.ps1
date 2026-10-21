@@ -8,7 +8,7 @@
 function Write-HookResult {
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('notification', 'toast-renderer', 'agent-stop-tts', 'agent-stop-sound')]
+        [ValidateSet('notification', 'toast-renderer', 'question-alert', 'agent-stop-tts', 'agent-stop-sound')]
         [string]$Hook,
 
         [Parameter(Mandatory)]
@@ -25,6 +25,12 @@ function Write-HookResult {
             'toast_dispatch_failed',
             'toast_displayed',
             'toast_display_failed',
+            'question_alert_dispatched',
+            'question_alert_dispatch_failed',
+            'question_alert_displayed',
+            'question_alert_display_failed',
+            'question_alert_reused',
+            'question_alert_replayed',
             'transcript_missing',
             'transcript_rejected',
             'message_missing',

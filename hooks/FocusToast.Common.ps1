@@ -4,19 +4,14 @@
     Shared helper for the terminal-focus-toast hooks. Dot-source this file:
         . "$PSScriptRoot\FocusToast.Common.ps1"
 
-    Provides focus detection and detached alert dispatch for Show-FocusToast.ps1.
+    Provides focus detection and detached dispatch for notification and compaction hooks.
 
     Based ONLY on:
         https://docs.github.com/en/copilot/reference/hooks-reference
         https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks
 #>
 
-. "$PSScriptRoot\HookLog.Common.ps1"
-
-Add-Type -Namespace CopilotFocus -Name Win -MemberDefinition @'
-[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();
-[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
-'@
+. "$PSScriptRoot\Compaction.Common.ps1"
 
 function Test-TerminalFocused {
     <#
@@ -30,6 +25,12 @@ function Test-TerminalFocused {
         process tree (the live hook process). A detached child whose parent has already
         exited would have a broken ancestor chain and must NOT call this.
     #>
+    if (-not ('CopilotFocus.Win' -as [type])) {
+        Add-Type -Namespace CopilotFocus -Name Win -MemberDefinition @'
+[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
+'@ -ErrorAction Stop
+    }
     $ancestorPids = New-Object 'System.Collections.Generic.HashSet[uint32]'
     $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
     while ($proc) {
@@ -51,20 +52,31 @@ function Start-FocusToast {
         returns immediately and is never delayed by the alert.
 
         Show-Toast uses the WinRT toast API, which is only projected in Windows PowerShell 5.1.
-        The command line contains only a fixed notification kind. It does not contain agent text.
+        The command line contains a fixed kind and, for compaction, a validated session ID.
+        The renderer reads the session name from local metadata. No agent text is passed.
     #>
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('question', 'permission')]
-        [string]$Kind
+        [ValidateSet('question', 'permission', 'compaction')]
+        [string]$Kind,
+        [string]$SessionId
     )
 
     $toast = Join-Path $PSScriptRoot 'Show-Toast.ps1'
     $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $argLine = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$toast`" -Kind $Kind"
     $dispatched = $false
+    $hook = if ($Kind -eq 'compaction') { 'pre-compact' } else { 'notification' }
+    $codePrefix = switch ($Kind) {
+        'question' { 'question_alert' }
+        'compaction' { 'compaction_alert' }
+        'permission' { 'toast' }
+    }
 
     try {
+        if ($Kind -eq 'compaction') {
+            $argLine += ' -SessionId ' + (ConvertTo-CompactionSessionId -SessionId $SessionId)
+        }
         Start-Process -FilePath $powershellPath `
             -ArgumentList $argLine `
             -WindowStyle Hidden `
@@ -75,11 +87,9 @@ function Start-FocusToast {
     }
 
     if ($dispatched) {
-        $code = if ($Kind -eq 'question') { 'question_alert_dispatched' } else { 'toast_dispatched' }
-        Write-HookResult -Hook 'notification' -Outcome 'worked' -Code $code
+        Write-HookResult -Hook $hook -Outcome 'worked' -Code ($codePrefix + '_dispatched')
     } else {
-        $code = if ($Kind -eq 'question') { 'question_alert_dispatch_failed' } else { 'toast_dispatch_failed' }
-        Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code $code
+        Write-HookResult -Hook $hook -Outcome 'did_not_work' -Code ($codePrefix + '_dispatch_failed')
     }
     return $dispatched
 }

@@ -1,6 +1,20 @@
 {
   "version": 1,
   "hooks": {
+    "sessionStart": [
+      {
+        "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Hook-SessionStart.ps1'",
+        "timeoutSec": 10,
+        "type": "command"
+      }
+    ],
+    "preCompact": [
+      {
+        "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Hook-PreCompact.ps1'",
+        "timeoutSec": 10,
+        "type": "command"
+      }
+    ],
     "agentStop": [
       {
         "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Hook-AgentStop.ps1'",

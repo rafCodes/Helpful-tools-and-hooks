@@ -1,7 +1,7 @@
 <#
     Show-Toast.ps1
 
-    Shows a persistent topmost question alert or a Windows permission toast.
+    Shows a persistent topmost question or compaction alert, or a Windows permission toast.
     Does NOT perform a focus check -- callers decide whether to show an alert.
 
     IMPORTANT: WinRT toast types are only projected in Windows PowerShell 5.1 (powershell.exe),
@@ -10,8 +10,8 @@
     but do not display from a detached/background process even though ShowBalloonTip succeeds;
     the WinRT toast displays reliably from a detached process.)
 
-    The parent passes only a fixed notification kind. The toast does not include question,
-    permission, command, path, or session text.
+    The parent passes a fixed kind and, for compaction, a validated session ID.
+    Compaction alerts read the session name from local metadata. Other alerts use fixed text.
 
     Based ONLY on:
         https://docs.github.com/en/copilot/reference/hooks-reference
@@ -19,16 +19,21 @@
 #>
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('question', 'permission')]
-    [string]$Kind
+    [ValidateSet('question', 'permission', 'compaction')]
+    [string]$Kind,
+    [string]$SessionId
 )
 
 . "$PSScriptRoot\HookLog.Common.ps1"
 
 try {
-    if ($Kind -eq 'question') {
+    if ($Kind -in @('question', 'compaction')) {
         . "$PSScriptRoot\QuestionAlert.Common.ps1"
-        Show-QuestionAlert
+        if ($Kind -eq 'compaction') {
+            Show-QuestionAlert -Kind compaction -SessionId $SessionId
+        } else {
+            Show-QuestionAlert
+        }
         return
     }
 
@@ -50,7 +55,9 @@ try {
     $notifier.Show($toast)
     Write-HookResult -Hook 'toast-renderer' -Outcome 'worked' -Code 'toast_displayed'
 } catch {
-    if ($Kind -eq 'question') {
+    if ($Kind -eq 'compaction') {
+        Write-HookResult -Hook 'compaction-alert' -Outcome 'did_not_work' -Code 'compaction_alert_display_failed'
+    } elseif ($Kind -eq 'question') {
         Write-HookResult -Hook 'question-alert' -Outcome 'did_not_work' -Code 'question_alert_display_failed'
     } else {
         Write-HookResult -Hook 'toast-renderer' -Outcome 'did_not_work' -Code 'toast_display_failed'

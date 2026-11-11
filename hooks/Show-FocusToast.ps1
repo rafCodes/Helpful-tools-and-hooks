@@ -9,7 +9,7 @@
     show a persistent topmost question alert or a Windows permission toast. If the
     terminal already has focus, do nothing.
 
-    Reads only notification_type from stdin. This notification field uses snake_case.
+    Reads notification_type and, for questions, sessionId from stdin.
     The handler ignores message and title.
     Output (stdout, JSON): {}  -> take no session action.
 
@@ -36,6 +36,10 @@ try {
         '{}'
         exit 0
     }
+    if ($notificationType -ceq 'elicitation_dialog') {
+        if ($payload['sessionId'] -isnot [string]) { throw 'invalid session ID' }
+        $sessionId = ConvertTo-CompactionSessionId -SessionId $payload['sessionId']
+    }
 } catch {
     Write-HookResult -Hook 'notification' -Outcome 'did_not_work' -Code 'invalid_input'
     '{}'
@@ -60,6 +64,10 @@ $kind = if ($notificationType -ceq 'elicitation_dialog') {
     'permission'
 }
 
-[void](Start-FocusToast -Kind $kind)
+if ($kind -eq 'question') {
+    [void](Start-FocusToast -Kind $kind -SessionId $sessionId)
+} else {
+    [void](Start-FocusToast -Kind $kind)
+}
 
 '{}'

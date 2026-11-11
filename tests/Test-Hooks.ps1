@@ -155,11 +155,20 @@ try {
     $notificationCases = @(
         @{
             Name = 'question'
-            Input = '{"hook_event_name":"Notification","notification_type":"elicitation_dialog","message":"private-test-canary","title":"untrusted-test-title"}'
+            Input = '{"hook_event_name":"Notification","notification_type":"elicitation_dialog","sessionId":"11111111-1111-1111-1111-111111111111","message":"private-test-canary","title":"untrusted-test-title"}'
             Focused = $false
             Outcome = 'worked'
             Code = 'question_alert_dispatched'
             Kind = 'question'
+            SessionId = $sessionId
+        },
+        @{
+            Name = 'question-canonical-session'
+            Input = '{"notification_type":"elicitation_dialog","sessionId":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"}'
+            Outcome = 'worked'
+            Code = 'question_alert_dispatched'
+            Kind = 'question'
+            SessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         },
         @{
             Name = 'permission'
@@ -171,7 +180,7 @@ try {
         },
         @{
             Name = 'focused-question'
-            Input = '{"hook_event_name":"Notification","notification_type":"elicitation_dialog","message":"private-test-canary"}'
+            Input = '{"hook_event_name":"Notification","notification_type":"elicitation_dialog","sessionId":"11111111-1111-1111-1111-111111111111","message":"private-test-canary"}'
             Focused = $true
             Outcome = 'worked'
             Code = 'focused'
@@ -187,7 +196,7 @@ try {
         },
         @{
             Name = 'focus-check-failure'
-            Input = '{"notification_type":"elicitation_dialog"}'
+            Input = '{"notification_type":"elicitation_dialog","sessionId":"11111111-1111-1111-1111-111111111111"}'
             FocusFailure = $true
             Outcome = 'did_not_work'
             Code = 'focus_check_failed'
@@ -195,10 +204,38 @@ try {
         },
         @{
             Name = 'question-dispatch-failure'
-            Input = '{"notification_type":"elicitation_dialog"}'
+            Input = '{"notification_type":"elicitation_dialog","sessionId":"11111111-1111-1111-1111-111111111111"}'
             DispatchFailure = $true
             Outcome = 'did_not_work'
             Code = 'question_alert_dispatch_failed'
+            Kind = $null
+        },
+        @{
+            Name = 'question-missing-session'
+            Input = '{"notification_type":"elicitation_dialog"}'
+            Outcome = 'did_not_work'
+            Code = 'invalid_input'
+            Kind = $null
+        },
+        @{
+            Name = 'question-snakecase-session-rejected'
+            Input = '{"notification_type":"elicitation_dialog","session_id":"11111111-1111-1111-1111-111111111111"}'
+            Outcome = 'did_not_work'
+            Code = 'invalid_input'
+            Kind = $null
+        },
+        @{
+            Name = 'question-injected-session'
+            Input = '{"notification_type":"elicitation_dialog","sessionId":"11111111-1111-1111-1111-111111111111 -Command private-test-canary"}'
+            Outcome = 'did_not_work'
+            Code = 'invalid_input'
+            Kind = $null
+        },
+        @{
+            Name = 'question-array-session'
+            Input = '{"notification_type":"elicitation_dialog","sessionId":["11111111-1111-1111-1111-111111111111"]}'
+            Outcome = 'did_not_work'
+            Code = 'invalid_input'
             Kind = $null
         },
         @{
@@ -294,7 +331,8 @@ try {
                 throw "Notification case '$($case.Name)' logged $($results.Count) entries with $($results[0].outcome)/$($results[0].code); expected one $($case.Outcome)/$($case.Code)."
             }
             if ((@($results[0].PSObject.Properties.Name | Sort-Object) -join ',') -ne 'code,hook,outcome,timestampUtc' -or
-                $logText.Contains('private-test-canary') -or $logText.Contains('untrusted-test-title')) {
+                $logText.Contains('private-test-canary') -or $logText.Contains('untrusted-test-title') -or
+                $logText.Contains($sessionId) -or $logText.Contains('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')) {
                 throw "Notification case '$($case.Name)' logged payload content or unexpected fields."
             }
 
@@ -303,8 +341,9 @@ try {
                 if (-not (Test-Path -LiteralPath $dispatchFile -PathType Leaf)) {
                     throw "Notification case '$($case.Name)' did not dispatch its toast."
                 }
-                if ((Get-Content -LiteralPath $dispatchFile -Raw).Trim() -cne $case.Kind) {
-                    throw "Notification case '$($case.Name)' dispatched the wrong toast kind."
+                $expectedDispatch = if ($case.Kind -eq 'question') { "$($case.Kind)|$($case.SessionId)" } else { $case.Kind }
+                if ((Get-Content -LiteralPath $dispatchFile -Raw).Trim() -cne $expectedDispatch) {
+                    throw "Notification case '$($case.Name)' dispatched the wrong toast kind or session."
                 }
             } elseif (Test-Path -LiteralPath $dispatchFile) {
                 throw "Notification case '$($case.Name)' dispatched an unexpected toast."
@@ -314,6 +353,7 @@ try {
         foreach ($rendererCase in @(
             @{ Kind = 'question'; Mode = 'normal' },
             @{ Kind = 'question'; Mode = 'sound-failure' },
+            @{ Kind = 'question'; Mode = 'name-failure' },
             @{ Kind = 'compaction'; Mode = 'normal' },
             @{ Kind = 'compaction'; Mode = 'sound-failure' },
             @{ Kind = 'compaction'; Mode = 'name-failure' }

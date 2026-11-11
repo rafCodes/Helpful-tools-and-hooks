@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory)][guid]$CoordinationId,
+    [guid]$SessionId = '11111111-1111-1111-1111-111111111111',
     [ValidateSet('question', 'compaction')][string]$Kind = 'question'
 )
 
@@ -14,11 +15,13 @@ try {
     . "$PSScriptRoot\..\..\hooks\QuestionAlert.Common.ps1"
     $fixtureCoordination = New-QuestionAlertCoordination -NamePrefix (
         'Local\CopilotHelpfulToolsQuestionAlertTest-' + $CoordinationId.ToString('N')
-    )
+    ) -IncludeSession:($Kind -eq 'question')
     function New-FixtureQuestionAlertCoordination {
-        param([string]$NamePrefix)
+        param([string]$NamePrefix, [switch]$IncludeSession)
         $expectedPrefix = if ($script:Kind -eq 'compaction') { 'Local\CopilotHelpfulToolsCompactionAlert-11111111-1111-1111-1111-111111111111' } else { '' }
-        if ($NamePrefix -cne $expectedPrefix) { throw 'The repeated alert used the wrong coordination scope.' }
+        if ($NamePrefix -cne $expectedPrefix -or $IncludeSession.IsPresent -ne ($script:Kind -eq 'question')) {
+            throw 'The repeated alert used the wrong coordination scope or session channel.'
+        }
         return $script:fixtureCoordination
     }
     function New-FixtureUnexpectedWindow { throw 'A repeated question created another window.' }
@@ -27,11 +30,7 @@ try {
     Set-Alias -Name New-QuestionAlertWindow -Value New-FixtureUnexpectedWindow
     Set-Alias -Name New-QuestionAlertPlayer -Value New-FixtureUnexpectedPlayer
 
-    if ($Kind -eq 'compaction') {
-        Show-QuestionAlert -Kind compaction -SessionId '11111111-1111-1111-1111-111111111111'
-    } else {
-        Show-QuestionAlert
-    }
+    Show-QuestionAlert -Kind $Kind -SessionId $SessionId.ToString('D')
     $results = @(Get-Content -LiteralPath (Join-Path $testLogDir 'hooks.log') | ForEach-Object {
         $_ | ConvertFrom-Json
     })
@@ -43,6 +42,7 @@ try {
     "PASS $Kind alert reuse checks"
 } finally {
     if ($fixtureCoordination) {
+        if ($fixtureCoordination.Session) { $fixtureCoordination.Session.Dispose() }
         $fixtureCoordination.Signal.Dispose()
         $fixtureCoordination.Owner.Dispose()
         $fixtureCoordination.Gate.Dispose()

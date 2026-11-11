@@ -52,7 +52,7 @@ function Start-FocusToast {
         returns immediately and is never delayed by the alert.
 
         Show-Toast uses the WinRT toast API, which is only projected in Windows PowerShell 5.1.
-        The command line contains a fixed kind and, for compaction, a validated session ID.
+        The command line contains a fixed kind and, for question or compaction alerts, a validated session ID.
         The renderer reads the session name from local metadata. No agent text is passed.
     #>
     param(
@@ -74,7 +74,7 @@ function Start-FocusToast {
     }
 
     try {
-        if ($Kind -eq 'compaction') {
+        if ($Kind -in @('question', 'compaction')) {
             $argLine += ' -SessionId ' + (ConvertTo-CompactionSessionId -SessionId $SessionId)
         }
         Start-Process -FilePath $powershellPath `

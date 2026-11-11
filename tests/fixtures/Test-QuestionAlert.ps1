@@ -18,9 +18,11 @@ $env:COPILOT_HOME = Join-Path $testLogDir 'copilot-home'
 
 . "$PSScriptRoot\..\..\hooks\QuestionAlert.Common.ps1"
 $sessionId = '11111111-1111-1111-1111-111111111111'
+$nextSessionId = '66666666-6666-6666-6666-666666666666'
+$fixtureExpectedSessionId = $sessionId
 $codePrefix = if ($Kind -eq 'compaction') { 'compaction_alert' } else { 'question_alert' }
 $fixtureExpectedSessionName = 'Compaction test <name> & "quotes"'
-foreach ($fixtureId in @($sessionId, '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333')) {
+foreach ($fixtureId in @($sessionId, $nextSessionId, '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333')) {
     $directory = Join-Path $env:COPILOT_HOME "session-state\$fixtureId"
     [void][System.IO.Directory]::CreateDirectory($directory)
     $name = if ($fixtureId -eq $sessionId) { $fixtureExpectedSessionName } else { 'Long name ' * 51 }
@@ -107,6 +109,63 @@ function Test-FixtureWindowAbove {
     return $next -eq $Lower
 }
 
+function Test-FixtureCaptionedQuestionContent {
+    $captioned = New-QuestionAlertWindow -Kind question -SessionId '22222222-2222-2222-2222-222222222222'
+    try {
+        $handle = [System.Windows.Interop.WindowInteropHelper]::new($captioned).Handle
+        $captioned.Left = [System.Windows.SystemParameters]::VirtualScreenLeft
+        $captioned.Top = [System.Windows.SystemParameters]::VirtualScreenTop + [System.Windows.SystemParameters]::VirtualScreenHeight + 100
+        $captioned.Show()
+        $captioned.UpdateLayout()
+        $bounds = [CopilotQuestionAlert.Native+Bounds]::new()
+        if (-not [CopilotQuestionAlert.Native]::GetWindowRect($handle, [ref]$bounds)) {
+            throw 'The captioned question card has no bounds.'
+        }
+        foreach ($controlName in @('Heading', 'Instruction', 'MessageViewport', 'SessionId', 'Dismiss')) {
+            Assert-FixtureControlInsideFrame -Window $captioned -ControlName $controlName
+            $control = $captioned.FindName($controlName)
+            $start = $control.PointToScreen([System.Windows.Point]::new(0, 0))
+            $end = $control.PointToScreen([System.Windows.Point]::new($control.ActualWidth, $control.ActualHeight))
+            if ($control.ActualHeight -le 0 -or $start.X -lt $bounds.Left -or $start.Y -lt $bounds.Top -or
+                $end.X -gt $bounds.Right -or $end.Y -gt $bounds.Bottom) {
+                throw "The captioned question card clips $controlName."
+            }
+        }
+        if ([CopilotQuestionAlert.Native]::GetForegroundWindow() -eq $handle -or
+            $captioned.FindName('SessionId').Text -cne 'Session ID: 22222222-2222-2222-2222-222222222222') {
+            throw 'The captioned question card took focus or lost its full ID.'
+        }
+        $captioned.FindName('MessageViewport').ScrollToEnd()
+        $captioned.UpdateLayout()
+        if ($captioned.FindName('MessageViewport').VerticalOffset -le 0) {
+            throw 'The captioned scroll fixture did not start with a scrolled long name.'
+        }
+        Set-SessionAlertContent -Window $captioned -Kind question -SessionId $script:nextSessionId
+        $captioned.UpdateLayout()
+        if ($captioned.FindName('MessageViewport').VerticalOffset -ne 0) {
+            throw 'A new question session did not reset the name scroll position.'
+        }
+    } finally {
+        $captioned.Close()
+    }
+}
+
+function Assert-FixtureControlInsideFrame {
+    param([System.Windows.Window]$Window, [string]$ControlName)
+
+    $frame = $Window.FindName('Frame')
+    $control = $Window.FindName($ControlName)
+    $start = $control.TranslatePoint([System.Windows.Point]::new(0, 0), $frame)
+    $end = $control.TranslatePoint([System.Windows.Point]::new($control.ActualWidth, $control.ActualHeight), $frame)
+    if ($control.ActualHeight -le 0 -or
+        $start.X -lt ($frame.BorderThickness.Left + $frame.Padding.Left - 0.01) -or
+        $start.Y -lt ($frame.BorderThickness.Top + $frame.Padding.Top - 0.01) -or
+        $end.X -gt ($frame.ActualWidth - $frame.BorderThickness.Right - $frame.Padding.Right + 0.01) -or
+        $end.Y -gt ($frame.ActualHeight - $frame.BorderThickness.Bottom - $frame.Padding.Bottom + 0.01)) {
+        throw "The alert frame clips $ControlName."
+    }
+}
+
 function Test-FixtureAlertCoexistence {
     $allWindows = @($script:window) + @($script:coexistWindows.ToArray())
     $handles = @(
@@ -122,13 +181,14 @@ function Test-FixtureAlertCoexistence {
                 $bounds.Right -gt $area.Right -or $bounds.Bottom -gt $area.Bottom) {
                 throw "A $($item.Tag) alert is outside the monitor work area: bounds=$($bounds.Left),$($bounds.Top),$($bounds.Right),$($bounds.Bottom); area=$($area.Left),$($area.Top),$($area.Right),$($area.Bottom)."
             }
-            if ($item.Tag -eq 'compaction') {
+            if ($item.Tag -in @('question', 'compaction')) {
                 foreach ($controlName in @('SessionId', 'Dismiss')) {
+                    Assert-FixtureControlInsideFrame -Window $item -ControlName $controlName
                     $control = $item.FindName($controlName)
                     $start = $control.PointToScreen([System.Windows.Point]::new(0, 0))
                     $end = $control.PointToScreen([System.Windows.Point]::new($control.ActualWidth, $control.ActualHeight))
                     if ($start.Y -lt $bounds.Top -or $end.Y -gt $bounds.Bottom -or $end.X -gt $bounds.Right) {
-                        throw 'A compaction alert hid its session ID or Dismiss control.'
+                        throw 'A session alert hid its session ID or Dismiss control.'
                     }
                 }
             }
@@ -302,9 +362,15 @@ try {
     Set-Alias -Name Get-QuestionAlertScope -Value Get-FixtureQuestionAlertScope
     try {
         $scopeTestPrefix = 'Local\CopilotHelpfulToolsQuestionAlertScopeTest-' + $coordinationId.ToString('N')
-        $standardCoordination = New-QuestionAlertCoordination -NamePrefix $scopeTestPrefix
+        $standardCoordination = New-QuestionAlertCoordination -NamePrefix $scopeTestPrefix -IncludeSession
         $fixtureSecurityScope = 'fixture-administrator'
-        $administratorCoordination = New-QuestionAlertCoordination -NamePrefix $scopeTestPrefix
+        $administratorCoordination = New-QuestionAlertCoordination -NamePrefix $scopeTestPrefix -IncludeSession
+        Set-QuestionAlertSession -Coordination $standardCoordination -SessionId $sessionId
+        Set-QuestionAlertSession -Coordination $administratorCoordination -SessionId $nextSessionId
+        if ((Get-QuestionAlertSession -Coordination $standardCoordination) -cne $sessionId -or
+            (Get-QuestionAlertSession -Coordination $administratorCoordination) -cne $nextSessionId) {
+            throw 'The question session channel crossed security scopes.'
+        }
         [void]$standardCoordination.Signal.Set()
         if ($administratorCoordination.Signal.WaitOne(0) -or -not $standardCoordination.Signal.WaitOne(0)) {
             throw 'The question alert coordination crossed security scopes.'
@@ -313,6 +379,7 @@ try {
         Remove-Item -LiteralPath 'Alias:\Get-QuestionAlertScope'
         foreach ($item in @($standardCoordination, $administratorCoordination)) {
             if ($item) {
+                if ($item.Session) { $item.Session.Dispose() }
                 $item.Signal.Dispose()
                 $item.Owner.Dispose()
                 $item.Gate.Dispose()
@@ -322,9 +389,12 @@ try {
 
     $fixtureCoordination = New-QuestionAlertCoordination -NamePrefix (
         'Local\CopilotHelpfulToolsQuestionAlertTest-' + $coordinationId.ToString('N')
-    )
+    ) -IncludeSession:($Kind -eq 'question')
     function Get-FixtureLayoutScope { return ('fixture-layout-' + $script:coordinationId.ToString('N')) }
     Set-Alias -Name Get-QuestionAlertScope -Value Get-FixtureLayoutScope
+    if ($Kind -eq 'question' -and -not $SoundFailure -and -not $NameFailure) {
+        Test-FixtureCaptionedQuestionContent
+    }
     $fixtureContent = New-QuestionAlertContent -Kind $Kind -SessionId ("`n" + $sessionId + "`n")
     $fixtureContent.WindowStyle = [System.Windows.WindowStyle]::None
     $fixtureContent.AllowsTransparency = $true
@@ -338,10 +408,18 @@ try {
         $window.FindName('Dismiss').Content -cne 'Dismiss') {
         throw 'The question alert has incorrect visibility, focus, or content settings.'
     }
-    if ($Kind -eq 'compaction' -and ($window.FindName('Heading').Text -cne 'Copilot is compacting' -or
+    $expectedHeading = if ($Kind -eq 'compaction') { 'Copilot is compacting' } else { 'Copilot needs your answer' }
+    if ($window.FindName('Heading').Text -cne $expectedHeading -or
         $window.FindName('Message').Text -cne "Session: $fixtureExpectedSessionName" -or
-        $window.FindName('SessionId').Text -cne "Session ID: $sessionId")) {
-        throw 'The compaction alert did not render its session identity as literal text.'
+        $window.FindName('SessionId').Text -cne "Session ID: $sessionId") {
+        throw 'The alert did not render its session identity as literal text.'
+    }
+    if ($Kind -eq 'question' -and ($window.FindName('Instruction').Text -cne 'Switch to the terminal to respond.' -or
+        $window.FindName('Instruction').Visibility -ne [System.Windows.Visibility]::Visible)) {
+        throw 'The question alert lost its response instruction.'
+    }
+    if ($Kind -eq 'compaction' -and $window.FindName('Instruction').Visibility -ne [System.Windows.Visibility]::Collapsed) {
+        throw 'The compaction alert displayed the question instruction.'
     }
     Remove-Item -LiteralPath 'Alias:\New-QuestionAlertContent'
     $auxiliaryKinds = if ($Kind -eq 'question') { @('compaction', 'compaction') } else { @('question', 'compaction') }
@@ -430,9 +508,9 @@ try {
             })
             if (-not $SoundFailure -and ($codePrefix + '_replayed') -notin $results.code) { return }
             $expectedMessage = if ($NameFailure) { 'Session name unavailable' } else { "Session: $fixtureExpectedSessionName" }
-            if ($Kind -eq 'compaction' -and ($window.FindName('Message').Text -cne $expectedMessage -or
-                $window.FindName('SessionId').Text -cne "Session ID: $sessionId")) {
-                throw 'A repeated compaction did not refresh its name or preserve the full ID.'
+            if ($window.FindName('Message').Text -cne $expectedMessage -or
+                $window.FindName('SessionId').Text -cne "Session ID: $fixtureExpectedSessionId") {
+                return
             }
             $verifyTimer.Stop()
             $handle = [System.Windows.Interop.WindowInteropHelper]::new($window).Handle
@@ -486,8 +564,22 @@ try {
                 throw 'The question notification tone must not exceed 1.5 seconds.'
             }
             $cover.Close()
+            if ($Kind -eq 'question') {
+                $script:fixtureExpectedSessionId = $sessionId
+                $script:fixtureExpectedSessionName = 'Latest question during dismissal'
+                $metadataPath = Join-Path $env:COPILOT_HOME "session-state\$sessionId\workspace.yaml"
+                [System.IO.File]::WriteAllText($metadataPath, "id: $sessionId`nname: $fixtureExpectedSessionName`n")
+                if (-not (Wait-QuestionAlertMutex -Mutex $fixtureCoordination.Gate -TimeoutMilliseconds 2000)) {
+                    throw 'The concurrent question could not acquire its session channel.'
+                }
+                try {
+                    Set-QuestionAlertSession -Coordination $fixtureCoordination -SessionId $sessionId
+                } finally {
+                    $fixtureCoordination.Gate.ReleaseMutex()
+                }
+            }
             if ($NameFailure) {
-                $script:fixtureExpectedSessionName = 'Compaction restored session'
+                $script:fixtureExpectedSessionName = 'Restored session'
                 $metadataPath = Join-Path $env:COPILOT_HOME "session-state\$sessionId\workspace.yaml"
                 [System.IO.File]::WriteAllText($metadataPath, "id: $sessionId`nname: $fixtureExpectedSessionName`n")
             }
@@ -496,8 +588,9 @@ try {
                 [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
             )
             if (-not $window.IsVisible) { throw 'Dismissing the alert lost a concurrent question.' }
-            if ($NameFailure -and $window.FindName('Message').Text -cne "Session: $fixtureExpectedSessionName") {
-                throw 'The compaction name did not recover after a metadata failure.'
+            if ($window.FindName('Message').Text -cne "Session: $fixtureExpectedSessionName" -or
+                $window.FindName('SessionId').Text -cne "Session ID: $fixtureExpectedSessionId") {
+                throw 'The alert lost the latest session identity or name recovery during dismissal.'
             }
             $window.FindName('Dismiss').RaiseEvent(
                 [System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)
@@ -527,16 +620,15 @@ try {
                 throw 'The full-screen fixture did not cover the question alert before its timer ran.'
             }
             $signalScript = Join-Path $PSScriptRoot 'Invoke-QuestionAlertSignal.ps1'
-            if ($Kind -eq 'compaction') {
-                $script:fixtureExpectedSessionName = 'Compaction renamed <session> & "quotes"'
-                $metadataPath = Join-Path $env:COPILOT_HOME "session-state\$sessionId\workspace.yaml"
-                [System.IO.File]::WriteAllText(
-                    $metadataPath,
-                    $(if ($NameFailure) { "id: $sessionId`nname: null`n" } else {
-                        "id: $sessionId`nname: " + ($fixtureExpectedSessionName | ConvertTo-Json -Compress) + "`n"
-                    })
-                )
-            }
+            $script:fixtureExpectedSessionId = if ($Kind -eq 'question') { $nextSessionId } else { $sessionId }
+            $script:fixtureExpectedSessionName = 'Renamed session <literal> & "quotes"'
+            $metadataPath = Join-Path $env:COPILOT_HOME "session-state\$fixtureExpectedSessionId\workspace.yaml"
+            [System.IO.File]::WriteAllText(
+                $metadataPath,
+                $(if ($NameFailure) { "id: $fixtureExpectedSessionId`nname: null`n" } else {
+                    "id: $fixtureExpectedSessionId`nname: " + ($fixtureExpectedSessionName | ConvertTo-Json -Compress) + "`n"
+                })
+            )
             $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             $peerScript = Join-Path $PSScriptRoot 'Invoke-CompactionLayoutPeer.ps1'
             foreach ($peerId in @('44444444-4444-4444-4444-444444444444', '55555555-5555-5555-5555-555555555555')) {
@@ -560,7 +652,7 @@ try {
             for ($i = 0; $i -lt 3; $i++) {
                 $stdoutFile = Join-Path $testLogDir "signal-$i-stdout.txt"
                 $stderrFile = Join-Path $testLogDir "signal-$i-stderr.txt"
-                $arguments = "-NoProfile -NonInteractive -STA -File `"$signalScript`" -CoordinationId $coordinationId -Kind $Kind"
+                $arguments = "-NoProfile -NonInteractive -STA -File `"$signalScript`" -CoordinationId $coordinationId -Kind $Kind -SessionId $fixtureExpectedSessionId"
                 $process = Start-Process -FilePath $powershellPath -ArgumentList $arguments -WindowStyle Hidden `
                     -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -PassThru
                 # Retain the handle so Windows PowerShell 5.1 can read ExitCode after the child exits.
@@ -603,19 +695,17 @@ try {
         return $script:player
     }
     function New-FixtureQuestionAlertCoordination {
-        param([string]$NamePrefix)
+        param([string]$NamePrefix, [switch]$IncludeSession)
         $expectedPrefix = if ($script:Kind -eq 'compaction') { 'Local\CopilotHelpfulToolsCompactionAlert-' + $script:sessionId } else { '' }
-        if ($NamePrefix -cne $expectedPrefix) { throw 'The alert used the wrong coordination scope.' }
+        if ($NamePrefix -cne $expectedPrefix -or $IncludeSession.IsPresent -ne ($script:Kind -eq 'question')) {
+            throw 'The alert used the wrong coordination scope or session channel.'
+        }
         return $script:fixtureCoordination
     }
     Set-Alias -Name New-QuestionAlertWindow -Value New-FixtureQuestionAlertWindow
     Set-Alias -Name New-QuestionAlertPlayer -Value New-FixtureQuestionAlertPlayer
     Set-Alias -Name New-QuestionAlertCoordination -Value New-FixtureQuestionAlertCoordination
-    if ($Kind -eq 'compaction') {
-        Show-QuestionAlert -Kind compaction -SessionId $sessionId
-    } else {
-        Show-QuestionAlert
-    }
+    Show-QuestionAlert -Kind $Kind -SessionId $sessionId
 
     if ($fixtureState.Failure) { throw $fixtureState.Failure }
     if (-not $fixtureState.Rendered -or $window.IsVisible) {
@@ -644,19 +734,19 @@ try {
     }
 
     $logText = Get-Content -LiteralPath (Join-Path $env:COPILOT_PLUGIN_DATA 'hooks.log') -Raw
-    if ($logText.Contains($sessionId) -or $logText.Contains('Compaction renamed')) {
+    if ($logText.Contains($sessionId) -or $logText.Contains($nextSessionId) -or
+        $logText.Contains('Renamed session') -or $logText.Contains('Latest question')) {
         throw 'The alert renderer logged session identity.'
     }
     function Show-FixtureQuestionAlert {
         param([string]$Kind = 'question', [string]$SessionId)
-        if ($Kind -cne $script:Kind -or ($Kind -eq 'compaction' -and $SessionId -cne $script:sessionId)) {
+        if ($Kind -cne $script:Kind -or $SessionId -cne $script:sessionId) {
             throw 'The renderer routed an incorrect kind or session ID.'
         }
         "$Kind-alert-routed"
     }
     Set-Alias -Name Show-QuestionAlert -Value Show-FixtureQuestionAlert
-    $rendererArguments = @{ Kind = $Kind }
-    if ($Kind -eq 'compaction') { $rendererArguments.SessionId = $sessionId }
+    $rendererArguments = @{ Kind = $Kind; SessionId = $sessionId }
     $rendererOutput = @(& "$PSScriptRoot\..\..\hooks\Show-Toast.ps1" @rendererArguments)
     if (($rendererOutput -join '').Trim() -cne "$Kind-alert-routed") {
         throw 'The question renderer did not select the persistent alert.'
@@ -677,6 +767,7 @@ try {
     if ($window) { $window.Close() }
     if ($fixtureContent -and $fixtureContent -ne $window) { $fixtureContent.Close() }
     if ($fixtureCoordination) {
+        if ($fixtureCoordination.Session) { $fixtureCoordination.Session.Dispose() }
         $fixtureCoordination.Signal.Dispose()
         $fixtureCoordination.Owner.Dispose()
         $fixtureCoordination.Gate.Dispose()

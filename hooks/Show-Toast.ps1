@@ -10,8 +10,8 @@
     but do not display from a detached/background process even though ShowBalloonTip succeeds;
     the WinRT toast displays reliably from a detached process.)
 
-    The parent passes a fixed kind and, for compaction, a validated session ID.
-    Compaction alerts read the session name from local metadata. Other alerts use fixed text.
+    The parent passes a fixed kind and, for question or compaction alerts, a validated session ID.
+    These alerts read the session name from local metadata. Permission toasts use fixed text.
 
     Based ONLY on:
         https://docs.github.com/en/copilot/reference/hooks-reference
@@ -29,11 +29,7 @@ param(
 try {
     if ($Kind -in @('question', 'compaction')) {
         . "$PSScriptRoot\QuestionAlert.Common.ps1"
-        if ($Kind -eq 'compaction') {
-            Show-QuestionAlert -Kind compaction -SessionId $SessionId
-        } else {
-            Show-QuestionAlert
-        }
+        Show-QuestionAlert -Kind $Kind -SessionId $SessionId
         return
     }
 

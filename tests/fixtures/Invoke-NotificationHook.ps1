@@ -22,10 +22,18 @@ function Start-FixtureToastProcess {
     if ($FilePath -cne $expectedExecutable -or $WindowStyle -cne 'Hidden') {
         throw 'Unexpected notification process request.'
     }
-    if ($ArgumentList -ceq ($expectedArguments + 'question')) {
+    $questionPrefix = $expectedArguments + 'question -SessionId '
+    if ($ArgumentList.StartsWith($questionPrefix, [System.StringComparison]::Ordinal)) {
         $kind = 'question'
+        $sessionId = $ArgumentList.Substring($questionPrefix.Length)
+        $id = [guid]::Empty
+        if (-not [guid]::TryParseExact($sessionId, 'D', [ref]$id) -or $sessionId -cne $id.ToString('D')) {
+            throw 'Question process arguments must contain only one canonical session ID.'
+        }
+        $dispatch = "$kind|$sessionId"
     } elseif ($ArgumentList -ceq ($expectedArguments + 'permission')) {
         $kind = 'permission'
+        $dispatch = $kind
     } else {
         throw 'Unexpected notification process arguments.'
     }
@@ -34,7 +42,7 @@ function Start-FixtureToastProcess {
     [void][System.IO.Directory]::CreateDirectory($env:COPILOT_PLUGIN_DATA)
     [System.IO.File]::AppendAllText(
         (Join-Path $env:COPILOT_PLUGIN_DATA 'dispatch.txt'),
-        ($kind + [Environment]::NewLine)
+        ($dispatch + [Environment]::NewLine)
     )
 }
 

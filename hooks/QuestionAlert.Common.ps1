@@ -1,4 +1,5 @@
 . "$PSScriptRoot\Compaction.Common.ps1"
+$script:QuestionAlertHeight = 220
 
 function Initialize-QuestionAlert {
     Add-Type -AssemblyName PresentationFramework, System.Windows.Forms -ErrorAction Stop
@@ -111,22 +112,60 @@ function Get-QuestionAlertScope {
 }
 
 function New-QuestionAlertCoordination {
-    param([ValidateNotNullOrEmpty()][string]$NamePrefix = 'Local\CopilotHelpfulToolsQuestionAlert')
+    param(
+        [ValidateNotNullOrEmpty()][string]$NamePrefix = 'Local\CopilotHelpfulToolsQuestionIdentityAlert',
+        [switch]$IncludeSession
+    )
 
     $NamePrefix += '-' + (Get-QuestionAlertScope)
-    $coordination = [pscustomobject]@{ Gate = $null; Owner = $null; Signal = $null }
+    $coordination = [pscustomobject]@{ Gate = $null; Owner = $null; Signal = $null; Session = $null }
     try {
         $coordination.Gate = [System.Threading.Mutex]::new($false, ($NamePrefix + 'Gate'))
         $coordination.Owner = [System.Threading.Mutex]::new($false, ($NamePrefix + 'Owner'))
         $coordination.Signal = [System.Threading.EventWaitHandle]::new(
             $false, [System.Threading.EventResetMode]::AutoReset, ($NamePrefix + 'Signal')
         )
+        if ($IncludeSession) {
+            $coordination.Session = [System.IO.MemoryMappedFiles.MemoryMappedFile]::CreateOrOpen(($NamePrefix + 'Session'), 36)
+        }
         return $coordination
     } catch {
-        foreach ($handle in @($coordination.Signal, $coordination.Owner, $coordination.Gate)) {
+        foreach ($handle in @($coordination.Session, $coordination.Signal, $coordination.Owner, $coordination.Gate)) {
             if ($handle) { $handle.Dispose() }
         }
         throw
+    }
+}
+
+function Set-QuestionAlertSession {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Coordination,
+        [Parameter(Mandatory)][string]$SessionId
+    )
+
+    # Callers hold Gate so another process cannot read a partially written ID.
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes((ConvertTo-CompactionSessionId -SessionId $SessionId))
+    $view = $Coordination.Session.CreateViewAccessor(0, 36)
+    try {
+        $view.WriteArray(0, $bytes, 0, $bytes.Length)
+    } finally {
+        $view.Dispose()
+    }
+}
+
+function Get-QuestionAlertSession {
+    param([Parameter(Mandatory)][pscustomobject]$Coordination)
+
+    # Callers hold Gate, as on the write path.
+    $view = $Coordination.Session.CreateViewAccessor(0, 36, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
+    try {
+        $bytes = [byte[]]::new(36)
+        if ($view.ReadArray(0, $bytes, 0, $bytes.Length) -ne $bytes.Length) {
+            throw 'The question alert session ID is incomplete.'
+        }
+        return (ConvertTo-CompactionSessionId -SessionId ([System.Text.Encoding]::ASCII.GetString($bytes)))
+    } finally {
+        $view.Dispose()
     }
 }
 
@@ -147,47 +186,50 @@ function Wait-QuestionAlertMutex {
 function New-QuestionAlertContent {
     param(
         [ValidateSet('question', 'compaction')][string]$Kind = 'question',
-        [string]$SessionId
+        [Parameter(Mandatory)][string]$SessionId
     )
 
     Initialize-QuestionAlert
-    $markup = [xml]@'
+    $markup = [xml]@"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Copilot CLI - question" Width="420" Height="180"
+        Title="Copilot CLI - question" Width="520" Height="$script:QuestionAlertHeight"
         WindowStyle="ToolWindow" ResizeMode="NoResize"
         Topmost="True" ShowActivated="False" ShowInTaskbar="False"
         Background="#0F172A" Foreground="White">
-    <Border BorderBrush="#F59E0B" BorderThickness="3" Padding="18">
+    <Border x:Name="Frame" BorderBrush="#F59E0B" BorderThickness="3" Padding="18">
         <StackPanel>
             <TextBlock x:Name="Heading" Text="Copilot needs your answer" FontSize="20" FontWeight="Bold"/>
+            <TextBlock x:Name="Instruction" Text="Switch to the terminal to respond." Margin="0,4,0,0"/>
             <ScrollViewer x:Name="MessageViewport" HorizontalScrollBarVisibility="Disabled"
-                          VerticalScrollBarVisibility="Disabled">
-                <TextBlock x:Name="Message" Text="Switch to the terminal to respond." Margin="0,10,0,0"/>
+                          VerticalScrollBarVisibility="Auto" MaxHeight="120">
+                <TextBlock x:Name="Message" Margin="0,10,0,0" TextWrapping="Wrap"/>
             </ScrollViewer>
-            <TextBlock x:Name="SessionId" Visibility="Collapsed" Margin="0,6,0,0"/>
+            <TextBlock x:Name="SessionId" Margin="0,6,0,0"/>
             <Button x:Name="Dismiss" Content="Dismiss" Width="90" Height="30"
                     HorizontalAlignment="Right" Margin="0,14,0,0"/>
         </StackPanel>
     </Border>
 </Window>
-'@
+"@
     $reader = [System.Xml.XmlNodeReader]::new($markup)
     try {
         $window = [System.Windows.Markup.XamlReader]::Load($reader)
-        if ($Kind -eq 'compaction') {
-            try {
-                $window.Width = 520
+        try {
+            if ($Kind -eq 'compaction') {
                 $window.Height = 300
-                $window.FindName('Message').TextWrapping = [System.Windows.TextWrapping]::Wrap
-                $window.FindName('MessageViewport').MaxHeight = 120
-                $window.FindName('MessageViewport').VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
-                $window.FindName('SessionId').Visibility = [System.Windows.Visibility]::Visible
-                Set-CompactionAlertContent -Window $window -SessionId $SessionId
-            } catch {
-                $window.Close()
-                throw
+                $window.FindName('Instruction').Visibility = [System.Windows.Visibility]::Collapsed
+                $window.Title = 'Copilot CLI - compacting'
+                $window.FindName('Heading').Text = 'Copilot is compacting'
+            } else {
+                $window.FindName('Frame').Padding = [System.Windows.Thickness]::new(12)
+                $window.FindName('Message').Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
+                $window.FindName('MessageViewport').MaxHeight = 34
             }
+            Set-SessionAlertContent -Window $window -Kind $Kind -SessionId $SessionId
+        } catch {
+            $window.Close()
+            throw
         }
         return $window
     } finally {
@@ -195,21 +237,22 @@ function New-QuestionAlertContent {
     }
 }
 
-function Set-CompactionAlertContent {
+function Set-SessionAlertContent {
     param(
         [Parameter(Mandatory)][System.Windows.Window]$Window,
+        [Parameter(Mandatory)][ValidateSet('question', 'compaction')][string]$Kind,
         [Parameter(Mandatory)][string]$SessionId
     )
 
     $SessionId = ConvertTo-CompactionSessionId -SessionId $SessionId
-    $Window.Title = 'Copilot CLI - compacting'
-    $Window.FindName('Heading').Text = 'Copilot is compacting'
+    if ($Kind -eq 'question') { $Window.FindName('MessageViewport').ScrollToTop() }
     $Window.FindName('SessionId').Text = "Session ID: $SessionId"
     try {
         $sessionName = Get-CompactionSessionName -SessionId $SessionId
     } catch {
         $Window.FindName('Message').Text = 'Session name unavailable'
-        Write-HookResult -Hook 'compaction-alert' -Outcome 'did_not_work' -Code 'session_name_unavailable'
+        $hook = if ($Kind -eq 'compaction') { 'compaction-alert' } else { 'question-alert' }
+        Write-HookResult -Hook $hook -Outcome 'did_not_work' -Code 'session_name_unavailable'
         return
     }
     $Window.FindName('Message').Text = "Session: $sessionName"
@@ -218,7 +261,7 @@ function Set-CompactionAlertContent {
 function New-QuestionAlertWindow {
     param(
         [ValidateSet('question', 'compaction')][string]$Kind = 'question',
-        [string]$SessionId
+        [Parameter(Mandatory)][string]$SessionId
     )
 
     $window = New-QuestionAlertContent -Kind $Kind -SessionId $SessionId
@@ -325,7 +368,7 @@ function Set-CompactionAlertLayout {
         $left = $Screen.WorkingArea.Right - $margin - $columnWidth
         $bottom = $Screen.WorkingArea.Bottom - $margin
         # Reserve the question alert's top-right area even when no question is open.
-        $top = $Screen.WorkingArea.Top + $margin + [int][Math]::Ceiling(180 * $scale) + $gap
+        $top = $Screen.WorkingArea.Top + $margin + [int][Math]::Ceiling($script:QuestionAlertHeight * $scale) + $gap
         $positions = [System.Collections.Generic.List[object]]::new()
         foreach ($alert in $alerts) {
             $height = $alert.Bounds.Bottom - $alert.Bounds.Top
@@ -473,9 +516,16 @@ function Invoke-QuestionAlertRepeat {
         [Parameter(Mandatory)][pscustomobject]$State
     )
 
-    if ($State.Kind -eq 'compaction') {
-        Set-CompactionAlertContent -Window $Window -SessionId $State.SessionId
+    if ($State.Kind -eq 'question') {
+        $locked = Wait-QuestionAlertMutex -Mutex $State.Coordination.Gate -TimeoutMilliseconds 2000
+        if (-not $locked) { throw 'The question alert session lock timed out.' }
+        try {
+            $State.SessionId = Get-QuestionAlertSession -Coordination $State.Coordination
+        } finally {
+            $State.Coordination.Gate.ReleaseMutex()
+        }
     }
+    Set-SessionAlertContent -Window $Window -Kind $State.Kind -SessionId $State.SessionId
     Move-QuestionAlertToActiveMonitor -Window $Window
     Set-QuestionAlertTopmost -Window $Window
     if ($Player -and -not $State.SoundFailed) {
@@ -486,12 +536,10 @@ function Invoke-QuestionAlertRepeat {
 function Show-QuestionAlert {
     param(
         [ValidateSet('question', 'compaction')][string]$Kind = 'question',
-        [string]$SessionId
+        [Parameter(Mandatory)][string]$SessionId
     )
 
-    if ($Kind -eq 'compaction') {
-        $SessionId = ConvertTo-CompactionSessionId -SessionId $SessionId
-    }
+    $SessionId = ConvertTo-CompactionSessionId -SessionId $SessionId
     $window = $null
     $player = $null
     $timer = $null
@@ -504,6 +552,7 @@ function Show-QuestionAlert {
         Finalizing = $false
         Kind = $Kind
         SessionId = $SessionId
+        Coordination = $null
         Hook = if ($Kind -eq 'compaction') { 'compaction-alert' } else { 'question-alert' }
         CodePrefix = if ($Kind -eq 'compaction') { 'compaction_alert' } else { 'question_alert' }
     }
@@ -512,10 +561,14 @@ function Show-QuestionAlert {
         $coordination = if ($Kind -eq 'compaction') {
             New-QuestionAlertCoordination -NamePrefix ('Local\CopilotHelpfulToolsCompactionAlert-' + $SessionId)
         } else {
-            New-QuestionAlertCoordination
+            New-QuestionAlertCoordination -IncludeSession
         }
+        $state.Coordination = $coordination
         $state.OwnsGate = Wait-QuestionAlertMutex -Mutex $coordination.Gate -TimeoutMilliseconds 2000
         if (-not $state.OwnsGate) { throw 'The question alert coordination lock timed out.' }
+        if ($Kind -eq 'question') {
+            Set-QuestionAlertSession -Coordination $coordination -SessionId $SessionId
+        }
         $state.OwnsOwner = Wait-QuestionAlertMutex -Mutex $coordination.Owner -TimeoutMilliseconds 0
         if (-not $state.OwnsOwner) {
             if (-not $coordination.Signal.Set()) { throw 'The question alert could not signal its existing window.' }
@@ -613,6 +666,7 @@ function Show-QuestionAlert {
                     if ($state.OwnsOwner) { $coordination.Owner.ReleaseMutex() }
                 } finally {
                     if ($state.OwnsGate) { $coordination.Gate.ReleaseMutex() }
+                    if ($coordination.Session) { $coordination.Session.Dispose() }
                     $coordination.Signal.Dispose()
                     $coordination.Owner.Dispose()
                     $coordination.Gate.Dispose()

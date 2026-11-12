@@ -20,7 +20,7 @@ Helpful tools and hooks/
 - `markitdown` — convert PDF/DOCX/XLSX/etc. to Markdown (venv recreated from `scripts/requirements.txt`)
 - `toggle-text-to-speech` — mute/unmute the TTS hook
 
-**Hooks** (`hooks.json` → `hooks/`): agentStop (text-to-speech + sound), notification (permission toasts and persistent question alerts), sessionStart (local configuration), and preCompact (opt-in compaction alerts). Question and compaction alerts show the session name and full ID. Permission toasts use fixed text. Alerts do not copy question or command content into Windows notification history. Helpers: `FocusToast.Common.ps1`, `QuestionAlert.Common.ps1`, `Compaction.Common.ps1`, `HookLog.Common.ps1`, and `Show-Toast.ps1`.
+**Hooks** (`hooks.json` → `hooks/`): agentStop (text-to-speech + sound), notification (permission toasts and persistent question alerts), sessionStart (local configuration), preCompact (opt-in compaction alerts), and errorOccurred (execution failure alerts). Question, compaction, and execution failure alerts show the session name and full ID. Permission toasts use fixed text. Alerts do not copy question, command, or error content into Windows notification history. Helpers: `FocusToast.Common.ps1`, `QuestionAlert.Common.ps1`, `Compaction.Common.ps1`, `HookLog.Common.ps1`, and `Show-Toast.ps1`.
 
 ### Compaction alerts
 
@@ -46,7 +46,7 @@ To enable compaction alerts:
 
 The next compaction attempt shows a persistent alert with the session name and full session ID. No restart is required for changes to this setting. Set the value to `false` to disable new compaction alerts. Dismiss an existing alert separately.
 
-The alert uses the question alert's style, sound, Dismiss button, and non-activating behavior. It appears even when the terminal has focus. Each session uses a separate, fixed-size compaction card. Alerts stack upward from the bottom-right of the active monitor. An additional column opens to the left when the current column is full. The layout reserves the top-right area for question alerts. It admits a new card before other cards can include that card in a reflow. Another attempt in the same session reuses that alert, refreshes the session name, and restarts the tone. Compaction alerts do not replace question alerts.
+The alert uses the question alert's style, sound, Dismiss button, and non-activating behavior. It appears even when the terminal has focus. Each session uses a separate, fixed-size compaction card. Alerts stack upward from the bottom-right of the active monitor. An additional column opens to the left when the current column is full. The layout reserves the top-right area for question alerts and the top-left area for execution failure alerts. It admits a new card before other cards can include that card in a reflow. Another attempt in the same session reuses that alert, refreshes the session name, and restarts the tone. Compaction alerts do not replace question or failure alerts.
 
 An existing card stays on its current monitor when another compaction occurs. If the layout cannot fit or a peer's placement fails, the renderer logs `compaction_alert_layout_failed` once when the card enters that failure state. The renderer keeps the card open and clamps it into the current monitor's work area when possible. The tone still replays. Cards can overlap if the display area becomes too small. A failed clamp logs `compaction_alert_clamp_failed` once per clamp-failure episode. A successful layout or clamp clears the corresponding failure state. The renderer writes these entries after releasing the layout mutex. Neither layout error closes an existing card.
 
@@ -62,6 +62,31 @@ Hook API sources:
 
 - https://docs.github.com/en/copilot/reference/hooks-reference
 - https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks
+
+### Execution failure alerts
+
+The `errorOccurred` hook displays a failure card when the runtime reports both of these conditions:
+
+- `recoverable` is the JSON boolean `false`.
+- `errorContext` is `model_call` or `system`.
+
+An AI-model request that exhausts its retries qualifies when the runtime reports those fields. A transcript's `session.error` entry alone does not establish hook delivery or recoverability. The hook uses the structured fields. It does not search error messages for a specific phrase. Recoverable errors do not display a card. Tool-execution errors and user-input errors do not display a card, even when those errors are not recoverable.
+
+The card says **Copilot execution failed**. It shows the session name, the full session ID, and **Switch to the terminal to inspect the error.** The card has a red border and appears at the top-left of the monitor that contains the active app. It stays open until you select **Dismiss** or close it. It does not take keyboard focus. It uses the same notification tone as question alerts.
+
+On a monitor work area narrower than 1,072 device-independent pixels, the full-size failure card moves down the left side, below the question card's reserved area. This prevents the two cards from overlapping. Display scaling affects this width. Compaction placement reserves the lower failure-card position on these displays.
+
+One failure card stays open for each Windows user and administrator state in the current Windows session. Another qualifying failure reuses that card, updates the session name and ID, moves the card to the active app's monitor, and restarts the tone. The failure card is independent of the question card and compaction cards. It identifies only the latest failed session. It does not keep a queue of failures.
+
+Failure alerts remain enabled when the terminal has focus. They do not depend on `compactionToastEnabled`. The renderer uses the same session-name lookup and bounded name area as question alerts. A missing or unreadable name shows **Session name unavailable** with the full ID. Question and failure cards use separate coordination objects and separate shared session-ID regions.
+
+The handler never displays or logs raw error messages, error names, or stack traces. Check the named session in the terminal for those details. Names and IDs can appear in screen sharing, recordings, and process auditing as described for question alerts.
+
+Alert renderer processes use the Windows system directory as their working directory. An open card does not keep the failed session's repository as its working directory.
+
+The handler logs `recoverable_error_ignored` or `non_session_error_ignored` for excluded events. It validates the documented payload types, including string `error.name` and `error.message` fields. Malformed input and input longer than 65,536 characters log `invalid_input` and do not display a card. Renderer launch failures log `failure_alert_dispatch_failed`. Display failures log `failure_alert_display_failed`. These entries use the existing privacy-safe `hooks.log`. The hook returns an empty decision and does not retry, resume, or block the failed execution.
+
+The hook requires the runtime to deliver an `errorOccurred` event. It does not monitor transcript files. It cannot notify after a hard process crash, forced termination, or a failure that the runtime does not report to hooks.
 
 ### Question alerts
 
@@ -83,7 +108,7 @@ The alert does not use Windows toast delivery. Windows Do Not Disturb and full-s
 
 The question sound uses the soft Windows `Windows Background.wav` notification tone, about 1.3 seconds long, at 75% player volume. The tone plays once and restarts for a new question. The hook does not change system volume, mute settings, or the volume of other apps. The output device and system volume still control the audible level. If sound playback fails, the alert stays visible and the hook logs `sound_play_failed`. The hook does not select a replacement sound. The reply-finished chime is unchanged.
 
-Permission prompts still use standard Windows toasts. Question and permission alerts remain suppressed when the terminal already has focus. Compaction alerts are not suppressed by terminal focus.
+Permission prompts still use standard Windows toasts. Question and permission alerts remain suppressed when the terminal already has focus. Compaction and execution failure alerts are not suppressed by terminal focus.
 
 The notification handler reads `notification_type` from stdin. For questions, it also reads and validates the camelCase `sessionId`. The internal `hook.start` session event uses `notificationType`; that field is not the notification script's input format. A missing or invalid question session ID logs `invalid_input` and does not launch a renderer. Permission toasts do not require a session ID.
 
@@ -102,7 +127,7 @@ copilot plugin install ".\Helpful tools and hooks"
 copilot plugin list
 ```
 
-After source changes, dismiss open question and compaction alerts and run the install command again. Start a new Copilot CLI session after the refresh. Existing sessions can retain cached plugin configuration. Older detached question windows cannot receive the new session-identity updates. Older compaction windows can also retain obsolete layout dimensions.
+After source changes, dismiss open question, compaction, and failure alerts and run the install command again. Start a new Copilot CLI session after the refresh. Existing sessions can retain cached plugin configuration. Older detached question windows cannot receive the new session-identity updates. Older compaction windows can also retain obsolete layout dimensions.
 
 To remove the plugin, run `copilot plugin uninstall helpful-tools-and-hooks` yourself.
 
@@ -118,7 +143,9 @@ The notification tests pipe synthetic JSON through the actual handler. Test stub
 
 Question checks also verify the name and full ID on the initial card, canonical-ID dispatch, rejected missing or malformed IDs, and a reused card that switches to a different session. An offscreen captioned card checks that a long name does not hide the full ID or Dismiss button. It also checks that a new session resets name scrolling. The renderer tests check name-read failure and recovery, literal text, privacy-safe logs, and the newest session identity during dismissal.
 
-The compaction checks use isolated `COPILOT_HOME` directories. They verify default-disabled configuration on disk, preservation of user settings, read-only compaction configuration, manual and automatic triggers, rejected configuration and input, literal session names, session-specific dispatch, repeated-alert reuse, name refresh, name-read failures and recovery, and log privacy. Name-parser checks run in Windows PowerShell 5.1, the production renderer runtime. The renderer checks run for both question and compaction alerts. They also verify simultaneous question and compaction windows, separate renderer processes, non-overlapping bounds, visible ID and Dismiss controls, and independent dismissal.
+The compaction checks use isolated `COPILOT_HOME` directories. They verify default-disabled configuration on disk, preservation of user settings, read-only compaction configuration, manual and automatic triggers, rejected configuration and input, literal session names, session-specific dispatch, repeated-alert reuse, name refresh, name-read failures and recovery, and log privacy. Name-parser checks run in Windows PowerShell 5.1, the production renderer runtime. The renderer checks run for question, compaction, and failure alerts. They also verify simultaneous alert windows, separate renderer processes, non-overlapping bounds, visible ID and Dismiss controls, and independent dismissal.
+
+Failure checks send a model-timeout error through `Hook-ErrorOccurred.ps1`. They also cover fatal system errors, excluded recoverable/tool/input errors, rejected field types and oversized payloads, launch failures, and log privacy. Process-dispatch checks verify that renderers start in the Windows system directory. Failure renderer checks verify left-side placement on wide and narrow work areas, captioned content fit, name-read failures and recovery, repeated failures from another session, and independent dismissal alongside question and compaction cards.
 
 The admission check runs an existing card's reflow before a new card acquires the layout mutex. The check rejects an oversized new card. Existing cards must remain visible and non-overlapping.
 
@@ -151,3 +178,29 @@ To check compaction alerts manually, enable `compactionToastEnabled` first:
 6. Select **Dismiss**.
 
 The expected result is one closed compaction alert with no change to keyboard focus. A disabled setting produces no new compaction alert. Compaction success or failure does not change the alert text.
+
+To check failure alerts, use an unlocked Windows desktop and the PowerShell prerequisites listed above. Use an existing local session that has `session-state\<sessionId>\workspace.yaml` in the active Copilot configuration directory. A synthetic event does not fail a real model request.
+
+1. Open PowerShell 7 in the workspace directory that contains `Helpful tools and hooks`.
+2. Replace `EXISTING-SESSION-ID` in the following command with the full local session ID.
+3. Run the command.
+
+```powershell
+@{
+    sessionId = 'EXISTING-SESSION-ID'
+    timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    cwd = (Get-Location).Path
+    recoverable = $false
+    errorContext = 'model_call'
+    error = @{ name = 'Error'; message = 'Synthetic execution failure test.' }
+} | ConvertTo-Json -Compress |
+    pwsh -NoProfile -File '.\Helpful tools and hooks\hooks\Hook-ErrorOccurred.ps1'
+```
+
+4. Confirm that **Copilot execution failed** appears on the left of the active monitor, at the top or below the question area on a narrow display.
+5. Confirm that the card shows the expected session name and full ID.
+6. Run the command with another local session ID.
+7. Confirm that the same card shows the latest session and restarts the tone.
+8. Select **Dismiss**.
+
+The expected result is one closed failure card without a focus change. A synthetic event checks the handler and renderer. It does not prove that a live runtime error dispatches the hook. Manual runs write `hooks.log` only when `COPILOT_PLUGIN_DATA` is set to an available local plugin-data directory.

@@ -1,6 +1,13 @@
 {
   "version": 1,
   "hooks": {
+    "errorOccurred": [
+      {
+        "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Hook-ErrorOccurred.ps1'",
+        "timeoutSec": 10,
+        "type": "command"
+      }
+    ],
     "sessionStart": [
       {
         "powershell": "pwsh -NoProfile -File '${PLUGIN_ROOT}\\hooks\\Hook-SessionStart.ps1'",

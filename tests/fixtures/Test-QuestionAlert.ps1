@@ -1,7 +1,7 @@
 param(
     [switch]$SoundFailure,
     [switch]$NameFailure,
-    [ValidateSet('question', 'compaction')][string]$Kind = 'question'
+    [ValidateSet('question', 'compaction', 'failure')][string]$Kind = 'question'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,9 +20,13 @@ $env:COPILOT_HOME = Join-Path $testLogDir 'copilot-home'
 $sessionId = '11111111-1111-1111-1111-111111111111'
 $nextSessionId = '66666666-6666-6666-6666-666666666666'
 $fixtureExpectedSessionId = $sessionId
-$codePrefix = if ($Kind -eq 'compaction') { 'compaction_alert' } else { 'question_alert' }
+$codePrefix = switch ($Kind) {
+    'compaction' { 'compaction_alert' }
+    'failure' { 'failure_alert' }
+    'question' { 'question_alert' }
+}
 $fixtureExpectedSessionName = 'Compaction test <name> & "quotes"'
-foreach ($fixtureId in @($sessionId, $nextSessionId, '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333')) {
+foreach ($fixtureId in @($sessionId, $nextSessionId, '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333', '77777777-7777-7777-7777-777777777777')) {
     $directory = Join-Path $env:COPILOT_HOME "session-state\$fixtureId"
     [void][System.IO.Directory]::CreateDirectory($directory)
     $name = if ($fixtureId -eq $sessionId) { $fixtureExpectedSessionName } else { 'Long name ' * 51 }
@@ -65,6 +69,7 @@ $layoutPeers = [System.Collections.Generic.List[object]]::new()
 $elapsed = [System.Diagnostics.Stopwatch]::new()
 $fixtureState = [pscustomobject]@{ Rendered = $false; Failure = $null }
 $admittedOverflowChecked = $false
+$narrowPlacementChecked = $false
 
 function Test-FixtureWindowVisibleAndTransparent {
     param([System.Windows.Window]$Window)
@@ -110,7 +115,7 @@ function Test-FixtureWindowAbove {
 }
 
 function Test-FixtureCaptionedQuestionContent {
-    $captioned = New-QuestionAlertWindow -Kind question -SessionId '22222222-2222-2222-2222-222222222222'
+    $captioned = New-QuestionAlertWindow -Kind $script:Kind -SessionId '22222222-2222-2222-2222-222222222222'
     try {
         $handle = [System.Windows.Interop.WindowInteropHelper]::new($captioned).Handle
         $captioned.Left = [System.Windows.SystemParameters]::VirtualScreenLeft
@@ -140,7 +145,7 @@ function Test-FixtureCaptionedQuestionContent {
         if ($captioned.FindName('MessageViewport').VerticalOffset -le 0) {
             throw 'The captioned scroll fixture did not start with a scrolled long name.'
         }
-        Set-SessionAlertContent -Window $captioned -Kind question -SessionId $script:nextSessionId
+        Set-SessionAlertContent -Window $captioned -Kind $script:Kind -SessionId $script:nextSessionId
         $captioned.UpdateLayout()
         if ($captioned.FindName('MessageViewport').VerticalOffset -ne 0) {
             throw 'A new question session did not reset the name scroll position.'
@@ -166,6 +171,42 @@ function Assert-FixtureControlInsideFrame {
     }
 }
 
+function Test-FixtureNarrowFailurePlacement {
+    $failure = $script:window
+    $question = @($script:coexistWindows | Where-Object Tag -EQ 'question')[0]
+    $handle = [System.Windows.Interop.WindowInteropHelper]::new($failure).Handle
+    $scale = [CopilotQuestionAlert.Native]::GetDpiForWindow($handle) / 96.0
+    $area = [System.Windows.Forms.Screen]::FromHandle($handle).WorkingArea
+    try {
+        foreach ($width in @(960, 1024, 1072, 1280)) {
+            $testArea = [System.Drawing.Rectangle]::new($area.Left, $area.Top, [int]($width * $scale), $area.Height)
+            Move-CornerAlertToWorkArea -Window $failure -WorkArea $testArea
+            Move-CornerAlertToWorkArea -Window $question -WorkArea $testArea
+            $failureBounds = [CopilotQuestionAlert.Native+Bounds]::new()
+            $questionBounds = [CopilotQuestionAlert.Native+Bounds]::new()
+            if (-not [CopilotQuestionAlert.Native]::GetWindowRect($handle, [ref]$failureBounds) -or
+                -not [CopilotQuestionAlert.Native]::GetWindowRect(
+                    [System.Windows.Interop.WindowInteropHelper]::new($question).Handle, [ref]$questionBounds
+                )) {
+                throw 'Narrow-work-area alert bounds are unavailable.'
+            }
+            $expectedTop = $area.Top + $(if ($width -lt 1072) { 248 * $scale } else { 16 * $scale })
+            if ([Math]::Abs($failureBounds.Left - ($area.Left + 16 * $scale)) -gt 2 -or
+                [Math]::Abs($failureBounds.Top - $expectedTop) -gt 2 -or
+                ($failureBounds.Left -lt $questionBounds.Right -and $questionBounds.Left -lt $failureBounds.Right -and
+                    $failureBounds.Top -lt $questionBounds.Bottom -and $questionBounds.Top -lt $failureBounds.Bottom)) {
+                throw 'The full-size left failure card overlaps the question card in a narrow work area.'
+            }
+            Assert-FixtureControlInsideFrame -Window $failure -ControlName 'SessionId'
+            Assert-FixtureControlInsideFrame -Window $failure -ControlName 'Dismiss'
+        }
+    } finally {
+        Move-QuestionAlertToActiveMonitor -Window $failure
+        Move-QuestionAlertToActiveMonitor -Window $question
+    }
+    $script:narrowPlacementChecked = $true
+}
+
 function Test-FixtureAlertCoexistence {
     $allWindows = @($script:window) + @($script:coexistWindows.ToArray())
     $handles = @(
@@ -181,7 +222,16 @@ function Test-FixtureAlertCoexistence {
                 $bounds.Right -gt $area.Right -or $bounds.Bottom -gt $area.Bottom) {
                 throw "A $($item.Tag) alert is outside the monitor work area: bounds=$($bounds.Left),$($bounds.Top),$($bounds.Right),$($bounds.Bottom); area=$($area.Left),$($area.Top),$($area.Right),$($area.Bottom)."
             }
-            if ($item.Tag -in @('question', 'compaction')) {
+            if ($item.Tag -eq 'failure') {
+                $dpi = [CopilotQuestionAlert.Native]::GetDpiForWindow($handle) / 96.0
+                $expectedTop = $area.Top + 16 * $dpi
+                if ($area.Width -lt (1072 * $dpi)) { $expectedTop += 232 * $dpi }
+                if ([Math]::Abs($bounds.Left - ($area.Left + 16 * $dpi)) -gt 2 -or
+                    [Math]::Abs($bounds.Top - $expectedTop) -gt 2) {
+                    throw 'The execution-failure card is not in its left-side monitor position.'
+                }
+            }
+            if ($item.Tag -in @('question', 'compaction', 'failure')) {
                 foreach ($controlName in @('SessionId', 'Dismiss')) {
                     Assert-FixtureControlInsideFrame -Window $item -ControlName $controlName
                     $control = $item.FindName($controlName)
@@ -389,10 +439,10 @@ try {
 
     $fixtureCoordination = New-QuestionAlertCoordination -NamePrefix (
         'Local\CopilotHelpfulToolsQuestionAlertTest-' + $coordinationId.ToString('N')
-    ) -IncludeSession:($Kind -eq 'question')
+    ) -IncludeSession:($Kind -ne 'compaction')
     function Get-FixtureLayoutScope { return ('fixture-layout-' + $script:coordinationId.ToString('N')) }
     Set-Alias -Name Get-QuestionAlertScope -Value Get-FixtureLayoutScope
-    if ($Kind -eq 'question' -and -not $SoundFailure -and -not $NameFailure) {
+    if ($Kind -in @('question', 'failure') -and -not $SoundFailure -and -not $NameFailure) {
         Test-FixtureCaptionedQuestionContent
     }
     $fixtureContent = New-QuestionAlertContent -Kind $Kind -SessionId ("`n" + $sessionId + "`n")
@@ -402,13 +452,21 @@ try {
     function New-FixtureQuestionAlertContent { return $script:fixtureContent }
     Set-Alias -Name New-QuestionAlertContent -Value New-FixtureQuestionAlertContent
     $window = New-QuestionAlertWindow -Kind $Kind -SessionId $sessionId
-    $expectedTitle = if ($Kind -eq 'compaction') { 'Copilot CLI - compacting' } else { 'Copilot CLI - question' }
+    $expectedTitle = switch ($Kind) {
+        'compaction' { 'Copilot CLI - compacting' }
+        'failure' { 'Copilot CLI - execution failed' }
+        'question' { 'Copilot CLI - question' }
+    }
     if (-not $window.Topmost -or $window.ShowActivated -or $window.ShowInTaskbar -or
         $window.Title -cne $expectedTitle -or
         $window.FindName('Dismiss').Content -cne 'Dismiss') {
         throw 'The question alert has incorrect visibility, focus, or content settings.'
     }
-    $expectedHeading = if ($Kind -eq 'compaction') { 'Copilot is compacting' } else { 'Copilot needs your answer' }
+    $expectedHeading = switch ($Kind) {
+        'compaction' { 'Copilot is compacting' }
+        'failure' { 'Copilot execution failed' }
+        'question' { 'Copilot needs your answer' }
+    }
     if ($window.FindName('Heading').Text -cne $expectedHeading -or
         $window.FindName('Message').Text -cne "Session: $fixtureExpectedSessionName" -or
         $window.FindName('SessionId').Text -cne "Session ID: $sessionId") {
@@ -421,10 +479,18 @@ try {
     if ($Kind -eq 'compaction' -and $window.FindName('Instruction').Visibility -ne [System.Windows.Visibility]::Collapsed) {
         throw 'The compaction alert displayed the question instruction.'
     }
+    if ($Kind -eq 'failure' -and ($window.FindName('Instruction').Text -cne 'Switch to the terminal to inspect the error.' -or
+        $window.FindName('Instruction').Visibility -ne [System.Windows.Visibility]::Visible)) {
+        throw 'The failure alert lost its error-inspection instruction.'
+    }
     Remove-Item -LiteralPath 'Alias:\New-QuestionAlertContent'
-    $auxiliaryKinds = if ($Kind -eq 'question') { @('compaction', 'compaction') } else { @('question', 'compaction') }
+    $auxiliaryKinds = switch ($Kind) {
+        'question' { @('compaction', 'compaction') }
+        'compaction' { @('question', 'compaction') }
+        'failure' { @('question', 'compaction', 'compaction') }
+    }
     for ($i = 0; $i -lt $auxiliaryKinds.Count; $i++) {
-        $auxiliaryId = if ($i -eq 0) { '22222222-2222-2222-2222-222222222222' } else { '33333333-3333-3333-3333-333333333333' }
+        $auxiliaryId = @('22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333', '77777777-7777-7777-7777-777777777777')[$i]
         $fixtureAuxiliaryContent = New-QuestionAlertContent -Kind $auxiliaryKinds[$i] -SessionId $auxiliaryId
         $fixtureAuxiliaryContent.WindowStyle = [System.Windows.WindowStyle]::None
         $fixtureAuxiliaryContent.AllowsTransparency = $true
@@ -536,6 +602,9 @@ try {
                 throw 'The question alert timer did not restore its position above the full-screen window.'
             }
             Test-FixtureAlertCoexistence
+            if ($Kind -eq 'failure' -and -not $SoundFailure -and -not $NameFailure) {
+                Test-FixtureNarrowFailurePlacement
+            }
             Stop-FixtureLayoutPeers
             foreach ($peer in $layoutPeers) {
                 $peer.Process.Refresh()
@@ -564,7 +633,7 @@ try {
                 throw 'The question notification tone must not exceed 1.5 seconds.'
             }
             $cover.Close()
-            if ($Kind -eq 'question') {
+            if ($Kind -in @('question', 'failure')) {
                 $script:fixtureExpectedSessionId = $sessionId
                 $script:fixtureExpectedSessionName = 'Latest question during dismissal'
                 $metadataPath = Join-Path $env:COPILOT_HOME "session-state\$sessionId\workspace.yaml"
@@ -620,7 +689,7 @@ try {
                 throw 'The full-screen fixture did not cover the question alert before its timer ran.'
             }
             $signalScript = Join-Path $PSScriptRoot 'Invoke-QuestionAlertSignal.ps1'
-            $script:fixtureExpectedSessionId = if ($Kind -eq 'question') { $nextSessionId } else { $sessionId }
+            $script:fixtureExpectedSessionId = if ($Kind -eq 'compaction') { $sessionId } else { $nextSessionId }
             $script:fixtureExpectedSessionName = 'Renamed session <literal> & "quotes"'
             $metadataPath = Join-Path $env:COPILOT_HOME "session-state\$fixtureExpectedSessionId\workspace.yaml"
             [System.IO.File]::WriteAllText(
@@ -696,8 +765,12 @@ try {
     }
     function New-FixtureQuestionAlertCoordination {
         param([string]$NamePrefix, [switch]$IncludeSession)
-        $expectedPrefix = if ($script:Kind -eq 'compaction') { 'Local\CopilotHelpfulToolsCompactionAlert-' + $script:sessionId } else { '' }
-        if ($NamePrefix -cne $expectedPrefix -or $IncludeSession.IsPresent -ne ($script:Kind -eq 'question')) {
+        $expectedPrefix = switch ($script:Kind) {
+            'compaction' { 'Local\CopilotHelpfulToolsCompactionAlert-' + $script:sessionId }
+            'failure' { 'Local\CopilotHelpfulToolsExecutionFailureAlert' }
+            'question' { '' }
+        }
+        if ($NamePrefix -cne $expectedPrefix -or $IncludeSession.IsPresent -ne ($script:Kind -ne 'compaction')) {
             throw 'The alert used the wrong coordination scope or session channel.'
         }
         return $script:fixtureCoordination
@@ -710,6 +783,9 @@ try {
     if ($fixtureState.Failure) { throw $fixtureState.Failure }
     if (-not $fixtureState.Rendered -or $window.IsVisible) {
         throw 'The question alert did not render and close through its Dismiss button.'
+    }
+    if ($Kind -eq 'failure' -and -not $SoundFailure -and -not $NameFailure -and -not $narrowPlacementChecked) {
+        throw 'The narrow-work-area failure placement checks did not execute.'
     }
     $results = @(Get-Content -LiteralPath (Join-Path $env:COPILOT_PLUGIN_DATA 'hooks.log') | ForEach-Object {
         $_ | ConvertFrom-Json

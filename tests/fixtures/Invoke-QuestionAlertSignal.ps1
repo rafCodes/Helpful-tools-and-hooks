@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)][guid]$CoordinationId,
     [guid]$SessionId = '11111111-1111-1111-1111-111111111111',
-    [ValidateSet('question', 'compaction')][string]$Kind = 'question'
+    [ValidateSet('question', 'compaction', 'failure')][string]$Kind = 'question'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,11 +15,15 @@ try {
     . "$PSScriptRoot\..\..\hooks\QuestionAlert.Common.ps1"
     $fixtureCoordination = New-QuestionAlertCoordination -NamePrefix (
         'Local\CopilotHelpfulToolsQuestionAlertTest-' + $CoordinationId.ToString('N')
-    ) -IncludeSession:($Kind -eq 'question')
+    ) -IncludeSession:($Kind -ne 'compaction')
     function New-FixtureQuestionAlertCoordination {
         param([string]$NamePrefix, [switch]$IncludeSession)
-        $expectedPrefix = if ($script:Kind -eq 'compaction') { 'Local\CopilotHelpfulToolsCompactionAlert-11111111-1111-1111-1111-111111111111' } else { '' }
-        if ($NamePrefix -cne $expectedPrefix -or $IncludeSession.IsPresent -ne ($script:Kind -eq 'question')) {
+        $expectedPrefix = switch ($script:Kind) {
+            'compaction' { 'Local\CopilotHelpfulToolsCompactionAlert-11111111-1111-1111-1111-111111111111' }
+            'failure' { 'Local\CopilotHelpfulToolsExecutionFailureAlert' }
+            'question' { '' }
+        }
+        if ($NamePrefix -cne $expectedPrefix -or $IncludeSession.IsPresent -ne ($script:Kind -ne 'compaction')) {
             throw 'The repeated alert used the wrong coordination scope or session channel.'
         }
         return $script:fixtureCoordination
@@ -34,7 +38,11 @@ try {
     $results = @(Get-Content -LiteralPath (Join-Path $testLogDir 'hooks.log') | ForEach-Object {
         $_ | ConvertFrom-Json
     })
-    $expectedCode = if ($Kind -eq 'compaction') { 'compaction_alert_reused' } else { 'question_alert_reused' }
+    $expectedCode = switch ($Kind) {
+        'compaction' { 'compaction_alert_reused' }
+        'failure' { 'failure_alert_reused' }
+        'question' { 'question_alert_reused' }
+    }
     if ($results.Count -ne 1 -or $results[0].code -cne $expectedCode -or
         $results[0].outcome -cne 'worked') {
         throw 'The repeated question did not signal the existing alert.'

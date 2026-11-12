@@ -1,5 +1,6 @@
 . "$PSScriptRoot\Compaction.Common.ps1"
 $script:QuestionAlertHeight = 220
+$script:CornerAlertWidth = 520
 
 function Initialize-QuestionAlert {
     Add-Type -AssemblyName PresentationFramework, System.Windows.Forms -ErrorAction Stop
@@ -185,7 +186,7 @@ function Wait-QuestionAlertMutex {
 
 function New-QuestionAlertContent {
     param(
-        [ValidateSet('question', 'compaction')][string]$Kind = 'question',
+        [ValidateSet('question', 'compaction', 'failure')][string]$Kind = 'question',
         [Parameter(Mandatory)][string]$SessionId
     )
 
@@ -193,7 +194,7 @@ function New-QuestionAlertContent {
     $markup = [xml]@"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Copilot CLI - question" Width="520" Height="$script:QuestionAlertHeight"
+        Title="Copilot CLI - question" Width="$script:CornerAlertWidth" Height="$script:QuestionAlertHeight"
         WindowStyle="ToolWindow" ResizeMode="NoResize"
         Topmost="True" ShowActivated="False" ShowInTaskbar="False"
         Background="#0F172A" Foreground="White">
@@ -225,6 +226,12 @@ function New-QuestionAlertContent {
                 $window.FindName('Frame').Padding = [System.Windows.Thickness]::new(12)
                 $window.FindName('Message').Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
                 $window.FindName('MessageViewport').MaxHeight = 34
+                if ($Kind -eq 'failure') {
+                    $window.Title = 'Copilot CLI - execution failed'
+                    $window.FindName('Heading').Text = 'Copilot execution failed'
+                    $window.FindName('Instruction').Text = 'Switch to the terminal to inspect the error.'
+                    $window.FindName('Frame').BorderBrush = [System.Windows.Media.Brushes]::Tomato
+                }
             }
             Set-SessionAlertContent -Window $window -Kind $Kind -SessionId $SessionId
         } catch {
@@ -240,18 +247,22 @@ function New-QuestionAlertContent {
 function Set-SessionAlertContent {
     param(
         [Parameter(Mandatory)][System.Windows.Window]$Window,
-        [Parameter(Mandatory)][ValidateSet('question', 'compaction')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('question', 'compaction', 'failure')][string]$Kind,
         [Parameter(Mandatory)][string]$SessionId
     )
 
     $SessionId = ConvertTo-CompactionSessionId -SessionId $SessionId
-    if ($Kind -eq 'question') { $Window.FindName('MessageViewport').ScrollToTop() }
+    if ($Kind -in @('question', 'failure')) { $Window.FindName('MessageViewport').ScrollToTop() }
     $Window.FindName('SessionId').Text = "Session ID: $SessionId"
     try {
         $sessionName = Get-CompactionSessionName -SessionId $SessionId
     } catch {
         $Window.FindName('Message').Text = 'Session name unavailable'
-        $hook = if ($Kind -eq 'compaction') { 'compaction-alert' } else { 'question-alert' }
+        $hook = switch ($Kind) {
+            'compaction' { 'compaction-alert' }
+            'failure' { 'failure-alert' }
+            'question' { 'question-alert' }
+        }
         Write-HookResult -Hook $hook -Outcome 'did_not_work' -Code 'session_name_unavailable'
         return
     }
@@ -260,7 +271,7 @@ function Set-SessionAlertContent {
 
 function New-QuestionAlertWindow {
     param(
-        [ValidateSet('question', 'compaction')][string]$Kind = 'question',
+        [ValidateSet('question', 'compaction', 'failure')][string]$Kind = 'question',
         [Parameter(Mandatory)][string]$SessionId
     )
 
@@ -305,13 +316,32 @@ function Move-QuestionAlertToActiveMonitor {
         Set-CompactionAlertLayout -Window $Window -Screen $screen
         return
     }
+    Move-CornerAlertToWorkArea -Window $Window -WorkArea $screen.WorkingArea
+}
+
+function Move-CornerAlertToWorkArea {
+    param(
+        [Parameter(Mandatory)][System.Windows.Window]$Window,
+        [Parameter(Mandatory)][System.Drawing.Rectangle]$WorkArea
+    )
+
     $handle = [System.Windows.Interop.WindowInteropHelper]::new($Window).EnsureHandle()
     $source = [System.Windows.Interop.HwndSource]::FromHwnd($handle)
-    $edge = $source.CompositionTarget.TransformFromDevice.Transform(
-        [System.Windows.Point]::new($screen.WorkingArea.Right, $screen.WorkingArea.Top)
+    $leftEdge = $source.CompositionTarget.TransformFromDevice.Transform(
+        [System.Windows.Point]::new($WorkArea.Left, $WorkArea.Top)
     )
-    $Window.Left = $edge.X - $Window.Width - 16
-    $Window.Top = $edge.Y + 16
+    $rightEdge = $source.CompositionTarget.TransformFromDevice.Transform(
+        [System.Windows.Point]::new($WorkArea.Right, $WorkArea.Top)
+    )
+    $Window.Top = $leftEdge.Y + 16
+    if ($Window.Tag -ceq 'failure') {
+        $Window.Left = $leftEdge.X + 16
+        if (($rightEdge.X - $leftEdge.X) -lt (2 * $script:CornerAlertWidth + 32)) {
+            $Window.Top += $script:QuestionAlertHeight + 12
+        }
+    } else {
+        $Window.Left = $rightEdge.X - $Window.Width - 16
+    }
 }
 
 function Set-CompactionAlertLayout {
@@ -367,8 +397,16 @@ function Set-CompactionAlertLayout {
         $columnWidth = ($alerts | ForEach-Object { $_.Bounds.Right - $_.Bounds.Left } | Measure-Object -Maximum).Maximum
         $left = $Screen.WorkingArea.Right - $margin - $columnWidth
         $bottom = $Screen.WorkingArea.Bottom - $margin
-        # Reserve the question alert's top-right area even when no question is open.
+        # Reserve the question and failure cards' top corners even when they are closed.
+        $leftCornerHeight = $script:QuestionAlertHeight
+        if ($Screen.WorkingArea.Width -lt ((2 * $script:CornerAlertWidth + 32) * $scale)) {
+            $leftCornerHeight += $script:QuestionAlertHeight + 12
+        }
+        $leftCornerEdge = $Screen.WorkingArea.Left + $margin + [int][Math]::Ceiling($script:CornerAlertWidth * $scale)
         $top = $Screen.WorkingArea.Top + $margin + [int][Math]::Ceiling($script:QuestionAlertHeight * $scale) + $gap
+        if ($left -lt $leftCornerEdge) {
+            $top = [Math]::Max($top, ($Screen.WorkingArea.Top + $margin + [int][Math]::Ceiling($leftCornerHeight * $scale) + $gap))
+        }
         $positions = [System.Collections.Generic.List[object]]::new()
         foreach ($alert in $alerts) {
             $height = $alert.Bounds.Bottom - $alert.Bounds.Top
@@ -376,6 +414,9 @@ function Set-CompactionAlertLayout {
                 $left -= $columnWidth + $gap
                 $bottom = $Screen.WorkingArea.Bottom - $margin
                 $top = $Screen.WorkingArea.Top + $margin
+                if ($left -lt $leftCornerEdge) {
+                    $top += [int][Math]::Ceiling($leftCornerHeight * $scale) + $gap
+                }
             }
             if ($height -le 0 -or $columnWidth -le 0 -or $left -lt $Screen.WorkingArea.Left + $margin -or
                 $bottom - $height -lt $top) {
@@ -491,11 +532,19 @@ function Start-QuestionAlertPlayback {
     param(
         [Parameter(Mandatory)][System.Windows.Media.MediaPlayer]$Player,
         [switch]$Replay,
-        [ValidateSet('question', 'compaction')][string]$Kind = 'question'
+        [ValidateSet('question', 'compaction', 'failure')][string]$Kind = 'question'
     )
 
-    $hook = if ($Kind -eq 'compaction') { 'compaction-alert' } else { 'question-alert' }
-    $codePrefix = if ($Kind -eq 'compaction') { 'compaction_alert' } else { 'question_alert' }
+    $hook = switch ($Kind) {
+        'compaction' { 'compaction-alert' }
+        'failure' { 'failure-alert' }
+        'question' { 'question-alert' }
+    }
+    $codePrefix = switch ($Kind) {
+        'compaction' { 'compaction_alert' }
+        'failure' { 'failure_alert' }
+        'question' { 'question_alert' }
+    }
     try {
         $Player.Stop()
         $Player.Play()
@@ -516,7 +565,7 @@ function Invoke-QuestionAlertRepeat {
         [Parameter(Mandatory)][pscustomobject]$State
     )
 
-    if ($State.Kind -eq 'question') {
+    if ($State.Kind -in @('question', 'failure')) {
         $locked = Wait-QuestionAlertMutex -Mutex $State.Coordination.Gate -TimeoutMilliseconds 2000
         if (-not $locked) { throw 'The question alert session lock timed out.' }
         try {
@@ -535,7 +584,7 @@ function Invoke-QuestionAlertRepeat {
 
 function Show-QuestionAlert {
     param(
-        [ValidateSet('question', 'compaction')][string]$Kind = 'question',
+        [ValidateSet('question', 'compaction', 'failure')][string]$Kind = 'question',
         [Parameter(Mandatory)][string]$SessionId
     )
 
@@ -553,20 +602,30 @@ function Show-QuestionAlert {
         Kind = $Kind
         SessionId = $SessionId
         Coordination = $null
-        Hook = if ($Kind -eq 'compaction') { 'compaction-alert' } else { 'question-alert' }
-        CodePrefix = if ($Kind -eq 'compaction') { 'compaction_alert' } else { 'question_alert' }
+        Hook = switch ($Kind) {
+            'compaction' { 'compaction-alert' }
+            'failure' { 'failure-alert' }
+            'question' { 'question-alert' }
+        }
+        CodePrefix = switch ($Kind) {
+            'compaction' { 'compaction_alert' }
+            'failure' { 'failure_alert' }
+            'question' { 'question_alert' }
+        }
     }
 
     try {
         $coordination = if ($Kind -eq 'compaction') {
             New-QuestionAlertCoordination -NamePrefix ('Local\CopilotHelpfulToolsCompactionAlert-' + $SessionId)
+        } elseif ($Kind -eq 'failure') {
+            New-QuestionAlertCoordination -NamePrefix 'Local\CopilotHelpfulToolsExecutionFailureAlert' -IncludeSession
         } else {
             New-QuestionAlertCoordination -IncludeSession
         }
         $state.Coordination = $coordination
         $state.OwnsGate = Wait-QuestionAlertMutex -Mutex $coordination.Gate -TimeoutMilliseconds 2000
         if (-not $state.OwnsGate) { throw 'The question alert coordination lock timed out.' }
-        if ($Kind -eq 'question') {
+        if ($Kind -in @('question', 'failure')) {
             Set-QuestionAlertSession -Coordination $coordination -SessionId $SessionId
         }
         $state.OwnsOwner = Wait-QuestionAlertMutex -Mutex $coordination.Owner -TimeoutMilliseconds 0

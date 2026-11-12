@@ -49,6 +49,7 @@ try {
     if (@($hooks.hooks.preCompact).Count -ne 1 -or @($hooks.hooks.sessionStart).Count -ne 1) {
         throw 'Compaction and configuration hooks must each be registered once.'
     }
+    if (@($hooks.hooks.errorOccurred).Count -ne 1) { throw 'The execution-failure hook must be registered once.' }
 
     . (Join-Path $hookRoot 'Compaction.Common.ps1')
     $sessionId = '11111111-1111-1111-1111-111111111111'
@@ -304,9 +305,52 @@ try {
         }
     )
 
+    $failureCases = @(
+        @{ Name = 'execution-timeout'; Context = 'model_call'; Outcome = 'worked'; Code = 'failure_alert_dispatched'; Kind = 'failure' },
+        @{ Name = 'system-failure'; Context = 'system'; Outcome = 'worked'; Code = 'failure_alert_dispatched'; Kind = 'failure' },
+        @{ Name = 'recoverable-model-error'; Context = 'model_call'; Patch = @{ recoverable = $true }; Outcome = 'worked'; Code = 'recoverable_error_ignored' },
+        @{ Name = 'fatal-tool-error'; Context = 'tool_execution'; Outcome = 'worked'; Code = 'non_session_error_ignored' },
+        @{ Name = 'fatal-user-input-error'; Context = 'user_input'; Outcome = 'worked'; Code = 'non_session_error_ignored' },
+        @{ Name = 'missing-recoverability'; RemoveField = 'recoverable'; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'string-recoverability'; Patch = @{ recoverable = 'false' }; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'unknown-error-context'; Patch = @{ errorContext = 'unknown' }; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'wrong-case-error-context'; Patch = @{ errorContext = 'MODEL_CALL' }; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'missing-error-session'; RemoveField = 'sessionId'; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'injected-error-session'; Patch = @{ sessionId = ($sessionId + ' -Command private-test-canary') }; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'invalid-error-shape'; Patch = @{ error = 'private-test-canary' }; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'non-string-error-name'; Patch = @{ error = @{ name = 42; message = 'private-test-canary' } }; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'oversized-error-stack'; Patch = @{ error = @{ name = 'Error'; message = 'private-test-canary'; stack = ('x' * 65537) } }; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'malformed-error-json'; Input = '{not-json'; Outcome = 'did_not_work'; Code = 'invalid_input' },
+        @{ Name = 'failure-dispatch-failure'; DispatchFailure = $true; Outcome = 'did_not_work'; Code = 'failure_alert_dispatch_failed' }
+    )
+    foreach ($case in $failureCases) {
+        $case.ErrorOccurred = $true
+        if (-not $case.Input) {
+            $payload = @{
+                sessionId = $sessionId
+                timestamp = 1794465235852
+                cwd = $root
+                errorContext = 'model_call'
+                recoverable = $false
+                error = @{
+                    name = 'Error'
+                    message = 'Execution failed: Failed to get response from the AI model; retried 5 times. operation timed out [ETIMEDOUT] private-test-canary'
+                    stack = 'private-test-canary'
+                }
+            }
+            if ($case.Context) { $payload.errorContext = $case.Context }
+            if ($case.RemoveField) { $payload.Remove($case.RemoveField) }
+            if ($case.Patch) {
+                foreach ($entry in $case.Patch.GetEnumerator()) { $payload[$entry.Key] = $entry.Value }
+            }
+            $case.Input = $payload | ConvertTo-Json -Compress -Depth 4
+        }
+        if ($case.Kind) { $case.SessionId = $sessionId }
+    }
+
     Push-Location -LiteralPath $root
     try {
-        foreach ($case in $notificationCases) {
+        foreach ($case in @($notificationCases) + @($failureCases)) {
             $env:COPILOT_PLUGIN_DATA = Join-Path $testLogDir $case.Name
             [void][System.IO.Directory]::CreateDirectory($env:COPILOT_PLUGIN_DATA)
             $stderrFile = Join-Path $env:COPILOT_PLUGIN_DATA 'stderr.txt'
@@ -314,6 +358,7 @@ try {
             if ($case.Focused) { $fixtureArguments += '-Focused' }
             if ($case.FocusFailure) { $fixtureArguments += '-FocusFailure' }
             if ($case.DispatchFailure) { $fixtureArguments += '-DispatchFailure' }
+            if ($case.ErrorOccurred) { $fixtureArguments += '-ErrorOccurred' }
             $output = @($case.Input | pwsh @fixtureArguments 2> $stderrFile)
             if ($LASTEXITCODE -ne 0 -or ($output -join '').Trim() -cne '{}' -or
                 (Get-Item -LiteralPath $stderrFile).Length -ne 0) {
@@ -326,13 +371,15 @@ try {
             }
             $logText = Get-Content -LiteralPath $logFile -Raw
             $results = @($logText.Trim() -split '\r?\n' | ForEach-Object { $_ | ConvertFrom-Json })
-            if ($results.Count -ne 1 -or $results[0].hook -cne 'notification' -or
+            $expectedHook = if ($case.ErrorOccurred) { 'error-occurred' } else { 'notification' }
+            if ($results.Count -ne 1 -or $results[0].hook -cne $expectedHook -or
                 $results[0].outcome -cne $case.Outcome -or $results[0].code -cne $case.Code) {
                 throw "Notification case '$($case.Name)' logged $($results.Count) entries with $($results[0].outcome)/$($results[0].code); expected one $($case.Outcome)/$($case.Code)."
             }
             if ((@($results[0].PSObject.Properties.Name | Sort-Object) -join ',') -ne 'code,hook,outcome,timestampUtc' -or
                 $logText.Contains('private-test-canary') -or $logText.Contains('untrusted-test-title') -or
-                $logText.Contains($sessionId) -or $logText.Contains('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')) {
+                $logText.Contains($sessionId) -or $logText.Contains('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee') -or
+                $logText.Contains('ETIMEDOUT')) {
                 throw "Notification case '$($case.Name)' logged payload content or unexpected fields."
             }
 
@@ -341,7 +388,7 @@ try {
                 if (-not (Test-Path -LiteralPath $dispatchFile -PathType Leaf)) {
                     throw "Notification case '$($case.Name)' did not dispatch its toast."
                 }
-                $expectedDispatch = if ($case.Kind -eq 'question') { "$($case.Kind)|$($case.SessionId)" } else { $case.Kind }
+                $expectedDispatch = if ($case.Kind -in @('question', 'failure')) { "$($case.Kind)|$($case.SessionId)" } else { $case.Kind }
                 if ((Get-Content -LiteralPath $dispatchFile -Raw).Trim() -cne $expectedDispatch) {
                     throw "Notification case '$($case.Name)' dispatched the wrong toast kind or session."
                 }
@@ -356,7 +403,10 @@ try {
             @{ Kind = 'question'; Mode = 'name-failure' },
             @{ Kind = 'compaction'; Mode = 'normal' },
             @{ Kind = 'compaction'; Mode = 'sound-failure' },
-            @{ Kind = 'compaction'; Mode = 'name-failure' }
+            @{ Kind = 'compaction'; Mode = 'name-failure' },
+            @{ Kind = 'failure'; Mode = 'normal' },
+            @{ Kind = 'failure'; Mode = 'sound-failure' },
+            @{ Kind = 'failure'; Mode = 'name-failure' }
         )) {
             $kind = $rendererCase.Kind
             $mode = $rendererCase.Mode

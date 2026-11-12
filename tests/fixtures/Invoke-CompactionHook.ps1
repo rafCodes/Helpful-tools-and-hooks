@@ -12,12 +12,13 @@ if ([System.IO.Path]::GetFileName($testRoot) -notmatch '^helpful-hooks-test-[0-9
 
 function Start-FixtureCompactionProcess {
     [CmdletBinding()]
-    param([string]$FilePath, [string]$ArgumentList, [string]$WindowStyle)
+    param([string]$FilePath, [string]$ArgumentList, [string]$WindowStyle, [string]$WorkingDirectory)
 
     $expectedExecutable = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $renderer = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\hooks\Show-Toast.ps1'))
     $expectedPrefix = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$renderer`" -Kind compaction -SessionId "
     if ($FilePath -cne $expectedExecutable -or $WindowStyle -cne 'Hidden' -or
+        $WorkingDirectory -cne [Environment]::SystemDirectory -or
         -not $ArgumentList.StartsWith($expectedPrefix, [System.StringComparison]::Ordinal)) {
         throw 'Unexpected compaction process request.'
     }

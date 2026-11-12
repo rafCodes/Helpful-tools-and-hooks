@@ -1,7 +1,7 @@
 <#
     Show-Toast.ps1
 
-    Shows a persistent topmost question or compaction alert, or a Windows permission toast.
+    Shows a persistent topmost question, compaction, or failure alert, or a Windows permission toast.
     Does NOT perform a focus check -- callers decide whether to show an alert.
 
     IMPORTANT: WinRT toast types are only projected in Windows PowerShell 5.1 (powershell.exe),
@@ -10,7 +10,7 @@
     but do not display from a detached/background process even though ShowBalloonTip succeeds;
     the WinRT toast displays reliably from a detached process.)
 
-    The parent passes a fixed kind and, for question or compaction alerts, a validated session ID.
+    The parent passes a fixed kind and, for persistent alerts, a validated session ID.
     These alerts read the session name from local metadata. Permission toasts use fixed text.
 
     Based ONLY on:
@@ -19,7 +19,7 @@
 #>
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('question', 'permission', 'compaction')]
+    [ValidateSet('question', 'permission', 'compaction', 'failure')]
     [string]$Kind,
     [string]$SessionId
 )
@@ -27,7 +27,7 @@ param(
 . "$PSScriptRoot\HookLog.Common.ps1"
 
 try {
-    if ($Kind -in @('question', 'compaction')) {
+    if ($Kind -in @('question', 'compaction', 'failure')) {
         . "$PSScriptRoot\QuestionAlert.Common.ps1"
         Show-QuestionAlert -Kind $Kind -SessionId $SessionId
         return
@@ -51,7 +51,9 @@ try {
     $notifier.Show($toast)
     Write-HookResult -Hook 'toast-renderer' -Outcome 'worked' -Code 'toast_displayed'
 } catch {
-    if ($Kind -eq 'compaction') {
+    if ($Kind -eq 'failure') {
+        Write-HookResult -Hook 'failure-alert' -Outcome 'did_not_work' -Code 'failure_alert_display_failed'
+    } elseif ($Kind -eq 'compaction') {
         Write-HookResult -Hook 'compaction-alert' -Outcome 'did_not_work' -Code 'compaction_alert_display_failed'
     } elseif ($Kind -eq 'question') {
         Write-HookResult -Hook 'question-alert' -Outcome 'did_not_work' -Code 'question_alert_display_failed'

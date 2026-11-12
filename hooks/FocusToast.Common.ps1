@@ -4,7 +4,7 @@
     Shared helper for the terminal-focus-toast hooks. Dot-source this file:
         . "$PSScriptRoot\FocusToast.Common.ps1"
 
-    Provides focus detection and detached dispatch for notification and compaction hooks.
+    Provides focus detection and detached dispatch for notification, compaction, and failure hooks.
 
     Based ONLY on:
         https://docs.github.com/en/copilot/reference/hooks-reference
@@ -52,12 +52,12 @@ function Start-FocusToast {
         returns immediately and is never delayed by the alert.
 
         Show-Toast uses the WinRT toast API, which is only projected in Windows PowerShell 5.1.
-        The command line contains a fixed kind and, for question or compaction alerts, a validated session ID.
+        The command line contains a fixed kind and, for persistent alerts, a validated session ID.
         The renderer reads the session name from local metadata. No agent text is passed.
     #>
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('question', 'permission', 'compaction')]
+        [ValidateSet('question', 'permission', 'compaction', 'failure')]
         [string]$Kind,
         [string]$SessionId
     )
@@ -66,19 +66,25 @@ function Start-FocusToast {
     $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $argLine = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$toast`" -Kind $Kind"
     $dispatched = $false
-    $hook = if ($Kind -eq 'compaction') { 'pre-compact' } else { 'notification' }
+    $hook = switch ($Kind) {
+        'compaction' { 'pre-compact' }
+        'failure' { 'error-occurred' }
+        default { 'notification' }
+    }
     $codePrefix = switch ($Kind) {
         'question' { 'question_alert' }
         'compaction' { 'compaction_alert' }
+        'failure' { 'failure_alert' }
         'permission' { 'toast' }
     }
 
     try {
-        if ($Kind -in @('question', 'compaction')) {
+        if ($Kind -in @('question', 'compaction', 'failure')) {
             $argLine += ' -SessionId ' + (ConvertTo-CompactionSessionId -SessionId $SessionId)
         }
         Start-Process -FilePath $powershellPath `
             -ArgumentList $argLine `
+            -WorkingDirectory ([Environment]::SystemDirectory) `
             -WindowStyle Hidden `
             -ErrorAction Stop | Out-Null
         $dispatched = $true
